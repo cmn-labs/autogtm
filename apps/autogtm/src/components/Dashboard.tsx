@@ -1113,7 +1113,12 @@ export function Dashboard({ userEmail }: DashboardProps) {
                                           </span>
                                         </div>
                                       );
-                                    })() : suggestedCampaign ? (
+                                    })() : lead.campaign_status === 'pending' ? (
+                                      <span className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium bg-amber-50 text-amber-600">
+                                        <Loader2 className="h-3 w-3 animate-spin" />
+                                        Routing
+                                      </span>
+                                    ) : suggestedCampaign ? (
                                       <div className="flex items-center gap-3">
                                         <button
                                           onClick={() => openCampaignPreview(suggestedCampaign.id, lead)}

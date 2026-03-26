@@ -692,7 +692,7 @@ export const syncCampaignAnalytics = inngest.createFunction(
     const supabase = getSupabase();
 
     const campaigns = await step.run('get-campaigns', async () => {
-      const { data } = await supabase.from('campaigns').select('*').in('status', ['active', 'error']);
+      const { data } = await supabase.from('campaigns').select('*').in('status', ['active', 'error', 'paused', 'draft']);
       return data || [];
     });
 
@@ -931,6 +931,12 @@ export const enrichLeadJob = inngest.createFunction(
 
         if (campaignData.status === 'draft') {
           await step.run('auto-activate-campaign', async () => {
+            const { data: freshCampaign } = await supabase
+              .from('campaigns')
+              .select('status')
+              .eq('id', suggestedCampaignId)
+              .single();
+            if (freshCampaign?.status !== 'draft') return;
             const { activateCampaign } = await import('@autogtm/core/clients/instantly');
             await activateCampaign(campaignData.instantly_campaign_id);
             await supabase.from('campaigns').update({ status: 'active', updated_at: new Date().toISOString() }).eq('id', suggestedCampaignId);
@@ -1007,6 +1013,12 @@ export const addLeadToCampaignJob = inngest.createFunction(
     // Activate campaign in Instantly on first lead
     if (data.campaign!.status === 'draft') {
       await step.run('activate-campaign', async () => {
+        const { data: freshCampaign } = await supabase
+          .from('campaigns')
+          .select('status')
+          .eq('id', campaignId)
+          .single();
+        if (freshCampaign?.status !== 'draft') return;
         const { activateCampaign } = await import('@autogtm/core/clients/instantly');
         await activateCampaign(data.campaign!.instantly_campaign_id);
         await supabase.from('campaigns').update({ status: 'active', updated_at: new Date().toISOString() }).eq('id', campaignId);
