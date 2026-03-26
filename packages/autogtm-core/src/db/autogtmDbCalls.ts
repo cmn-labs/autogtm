@@ -322,7 +322,7 @@ export async function getActiveCampaignsForCompany(companyId: string): Promise<C
     .from('campaigns')
     .select()
     .eq('company_id', companyId)
-    .eq('status', 'active')
+    .in('status', ['active', 'draft'])
     .eq('is_accepting_leads', true)
     .order('created_at', { ascending: false });
 

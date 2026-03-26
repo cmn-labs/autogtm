@@ -153,6 +153,19 @@ export async function getCampaign(campaignId: string): Promise<InstantlyCampaign
 }
 
 /**
+ * Map Instantly's numeric campaign status to our DB string status.
+ * Instantly codes: 0=draft, 1=active, 2=paused, 3=completed, 4=subsequences running
+ * Negative = errors: -1=accounts unhealthy, -2=bounce protect, -99=suspended
+ */
+export function mapInstantlyStatus(numericStatus: number): 'draft' | 'active' | 'paused' | 'completed' | 'error' {
+  if (numericStatus === 0) return 'draft';
+  if (numericStatus === 1 || numericStatus === 4) return 'active';
+  if (numericStatus === 2) return 'paused';
+  if (numericStatus === 3) return 'completed';
+  return 'error';
+}
+
+/**
  * List all campaigns
  */
 export async function listCampaigns(options?: {

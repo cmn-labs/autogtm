@@ -79,7 +79,7 @@ Return ONLY valid JSON matching one of these shapes:
 ${autoMode ? '{ "action": "skip", "reason": "..." }' : ''}`;
 
   const campaignSummaries = campaigns
-    .filter(c => c.is_accepting_leads && c.status === 'active')
+    .filter(c => c.is_accepting_leads && (c.status === 'active' || c.status === 'draft'))
     .map(c => ({
       id: c.id,
       name: c.name,

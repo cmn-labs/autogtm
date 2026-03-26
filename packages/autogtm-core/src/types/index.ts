@@ -114,7 +114,7 @@ export const CampaignSchema = z.object({
   company_id: z.string().uuid(),
   instantly_campaign_id: z.string(),
   name: z.string(),
-  status: z.enum(['draft', 'active', 'paused', 'completed']),
+  status: z.enum(['draft', 'active', 'paused', 'completed', 'error']),
   leads_count: z.number().default(0),
   emails_sent: z.number().default(0),
   opens: z.number().default(0),

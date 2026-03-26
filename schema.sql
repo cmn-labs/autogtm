@@ -72,7 +72,7 @@ create table campaigns (
   company_id uuid not null references companies(id) on delete cascade,
   instantly_campaign_id text not null,
   name text not null,
-  status text not null default 'draft' check (status in ('draft', 'active', 'paused', 'completed')),
+  status text not null default 'draft' check (status in ('draft', 'active', 'paused', 'completed', 'error')),
   persona text,
   target_criteria jsonb,
   leads_count integer not null default 0,

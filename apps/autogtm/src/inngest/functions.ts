@@ -4,6 +4,8 @@ import { enrichLead } from '@autogtm/core/ai/enrichLead';
 import {
   addLeadsToCampaign,
   getCampaignAnalytics,
+  getCampaign,
+  mapInstantlyStatus,
 } from '@autogtm/core/clients/instantly';
 import {
   updateCampaignStats,
@@ -687,29 +689,43 @@ export const syncCampaignAnalytics = inngest.createFunction(
   },
   { cron: '0 * * * *' }, // Every hour
   async ({ step, logger }) => {
-    const campaigns = await step.run('get-active-campaigns', async () => {
-      const supabase = getSupabase();
-      const { data } = await supabase.from('campaigns').select('*').eq('status', 'active');
+    const supabase = getSupabase();
+
+    const campaigns = await step.run('get-campaigns', async () => {
+      const { data } = await supabase.from('campaigns').select('*').in('status', ['active', 'error']);
       return data || [];
     });
 
     let updated = 0;
     for (const campaign of campaigns) {
-      if (campaign.status === 'active') {
-        await step.run(`sync-campaign-${campaign.id}`, async () => {
-          try {
+      await step.run(`sync-campaign-${campaign.id}`, async () => {
+        try {
+          // Sync status from Instantly
+          const instantlyCampaign = await getCampaign(campaign.instantly_campaign_id);
+          const mappedStatus = mapInstantlyStatus(instantlyCampaign.status);
+
+          if (mappedStatus !== campaign.status) {
+            await supabase.from('campaigns').update({
+              status: mappedStatus,
+              updated_at: new Date().toISOString(),
+            }).eq('id', campaign.id);
+            logger.info(`Campaign ${campaign.id} status: ${campaign.status} → ${mappedStatus} (Instantly: ${instantlyCampaign.status})`);
+          }
+
+          // Sync analytics (only for active campaigns)
+          if (mappedStatus === 'active') {
             const analytics = await getCampaignAnalytics(campaign.instantly_campaign_id);
             await updateCampaignStats(campaign.id, {
               emails_sent: analytics.sent,
               opens: analytics.opened,
               replies: analytics.replied,
             });
-            updated++;
-          } catch (e) {
-            logger.error(`Failed to sync campaign ${campaign.id}:`, e);
           }
-        });
-      }
+          updated++;
+        } catch (e) {
+          logger.error(`Failed to sync campaign ${campaign.id}:`, e);
+        }
+      });
     }
 
     return { campaignsUpdated: updated };
@@ -894,7 +910,7 @@ export const enrichLeadJob = inngest.createFunction(
       });
 
       const canAutoAdd = campaignData
-        && campaignData.status === 'active'
+        && (campaignData.status === 'active' || campaignData.status === 'draft')
         && campaignData.is_accepting_leads
         && (campaignData.leads_count || 0) < (campaignData.max_leads || 500);
 
@@ -912,6 +928,15 @@ export const enrichLeadJob = inngest.createFunction(
           await markLeadRouted(leadId, suggestedCampaignId);
           await incrementCampaignLeadCount(suggestedCampaignId);
         });
+
+        if (campaignData.status === 'draft') {
+          await step.run('auto-activate-campaign', async () => {
+            const { activateCampaign } = await import('@autogtm/core/clients/instantly');
+            await activateCampaign(campaignData.instantly_campaign_id);
+            await supabase.from('campaigns').update({ status: 'active', updated_at: new Date().toISOString() }).eq('id', suggestedCampaignId);
+          });
+          logger.info(`Activated campaign ${suggestedCampaignId} on first lead`);
+        }
 
         return { leadId, fullName: enrichedData.full_name, category: enrichedData.category, fitScore: enrichedData.promotion_fit_score, routing: { action: 'auto_added', campaignId: suggestedCampaignId } };
       }
@@ -943,7 +968,7 @@ export const addLeadToCampaignJob = inngest.createFunction(
     const data = await step.run('get-data', async () => {
       const [{ data: lead }, { data: campaign }] = await Promise.all([
         supabase.from('leads').select('email, full_name, title, bio, url, social_links, total_audience').eq('id', leadId).single(),
-        supabase.from('campaigns').select('instantly_campaign_id').eq('id', campaignId).single(),
+        supabase.from('campaigns').select('instantly_campaign_id, status').eq('id', campaignId).single(),
       ]);
       return { lead, campaign };
     });
@@ -978,6 +1003,16 @@ export const addLeadToCampaignJob = inngest.createFunction(
       await markLeadRouted(leadId, campaignId);
       await incrementCampaignLeadCount(campaignId);
     });
+
+    // Activate campaign in Instantly on first lead
+    if (data.campaign!.status === 'draft') {
+      await step.run('activate-campaign', async () => {
+        const { activateCampaign } = await import('@autogtm/core/clients/instantly');
+        await activateCampaign(data.campaign!.instantly_campaign_id);
+        await supabase.from('campaigns').update({ status: 'active', updated_at: new Date().toISOString() }).eq('id', campaignId);
+      });
+      logger.info(`Activated campaign ${campaignId} on first lead`);
+    }
 
     logger.info(`Lead ${leadId} added to campaign ${campaignId}`);
     return { leadId, campaignId };

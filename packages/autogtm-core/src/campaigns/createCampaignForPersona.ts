@@ -1,11 +1,11 @@
 /**
  * Creates a new Instantly campaign for a given persona,
- * generates AI email copy, saves everything to DB, and activates it.
+ * generates AI email copy, and saves everything to DB as draft.
+ * Campaign is activated when the first lead is added.
  */
 
 import {
   createCampaign as createInstantlyCampaign,
-  activateCampaign,
 } from '../clients/instantly';
 import { generateEmailSequence } from '../ai/generateEmailCopy';
 import {
@@ -65,7 +65,7 @@ export async function createCampaignForPersona(
     company_id: company.id,
     instantly_campaign_id: instantlyCampaign.id,
     name: instantlyCampaign.name,
-    status: 'active',
+    status: 'draft',
     leads_count: 0,
     emails_sent: 0,
     opens: 0,
@@ -85,9 +85,6 @@ export async function createCampaignForPersona(
     emailRecords.push({ campaign_id: campaignRecord.id, step: 2, subject: emailSequence.followUp2.subject, body: emailSequence.followUp2.body, delay_days: emailSequence.followUp2.delayDays });
   }
   await createCampaignEmails(emailRecords);
-
-  // 5. Activate immediately (safe - no leads in it yet)
-  await activateCampaign(instantlyCampaign.id);
 
   return campaignRecord;
 }

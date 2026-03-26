@@ -160,8 +160,11 @@ export function Dashboard({ userEmail }: DashboardProps) {
   const [sendingAccountsOpen, setSendingAccountsOpen] = useState(false);
   const [expandedCampaign, setExpandedCampaign] = useState<string | null>(null);
   const [leadFilter, setLeadFilter] = useState<'all' | 'suggested' | 'routed' | 'pending' | 'skipped'>('all');
+  const [campaignFilter, setCampaignFilter] = useState<'all' | 'ready' | 'active' | 'error' | 'completed'>('ready');
   const [previewCampaign, setPreviewCampaign] = useState<{ campaign: Campaign; emails: CampaignEmail[] } | null>(null);
   const [loadingCampaignPreview, setLoadingCampaignPreview] = useState(false);
+  const [leadDrawerEmails, setLeadDrawerEmails] = useState<CampaignEmail[]>([]);
+  const [loadingLeadDrawerEmails, setLoadingLeadDrawerEmails] = useState(false);
   const [promptOpen, setPromptOpen] = useState(false);
   const [guideOpen, setGuideOpen] = useState(false);
   const [companyProfileOpen, setCompanyProfileOpen] = useState(false);
@@ -201,6 +204,17 @@ export function Dashboard({ userEmail }: DashboardProps) {
 
     return () => clearInterval(interval);
   }, [leads.some(l => l.enrichment_status === 'enriching' || l.campaign_status === 'pending'), companyId]);
+
+  useEffect(() => {
+    const campaignId = selectedLead?.suggested_campaign_id || (selectedLead?.campaign_status === 'routed' ? selectedLead?.campaign_id : null);
+    if (!campaignId) { setLeadDrawerEmails([]); return; }
+    setLoadingLeadDrawerEmails(true);
+    fetch(`/api/campaigns/${campaignId}/emails`)
+      .then(res => res.ok ? res.json() : null)
+      .then(data => { if (data?.emails) setLeadDrawerEmails(data.emails); })
+      .catch(() => {})
+      .finally(() => setLoadingLeadDrawerEmails(false));
+  }, [selectedLead?.id, selectedLead?.suggested_campaign_id, selectedLead?.campaign_id]);
 
   const fetchData = async () => {
     setLoading(true);
@@ -1106,12 +1120,7 @@ export function Dashboard({ userEmail }: DashboardProps) {
                                           </span>
                                         </div>
                                       );
-                                    })() : lead.campaign_status === 'pending' ? (
-                                      <span className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium bg-amber-50 text-amber-600">
-                                        <Loader2 className="h-3 w-3 animate-spin" />
-                                        Routing
-                                      </span>
-                                    ) : suggestedCampaign ? (
+                                    })() : suggestedCampaign ? (
                                       <div className="flex items-center gap-3">
                                         <button
                                           onClick={() => openCampaignPreview(suggestedCampaign.id)}
@@ -1374,16 +1383,67 @@ export function Dashboard({ userEmail }: DashboardProps) {
                       )}
                     </div>
 
-                    {campaigns.length === 0 ? (
+                    {(() => {
+                      const getEffectiveStatus = (c: Campaign): 'active' | 'ready' | 'error' | 'completed' => {
+                        if (c.status === 'error') return 'error';
+                        if (c.status === 'completed' || c.status === 'paused') return 'completed';
+                        if (c.leads_count > 0 && c.status === 'active') return 'active';
+                        return 'ready';
+                      };
+                      const readyCampaigns = campaigns.filter(c => getEffectiveStatus(c) === 'ready');
+                      const activeCampaigns = campaigns.filter(c => getEffectiveStatus(c) === 'active');
+                      const errorCampaigns = campaigns.filter(c => getEffectiveStatus(c) === 'error');
+                      const completedCampaigns = campaigns.filter(c => getEffectiveStatus(c) === 'completed');
+                      const displayCampaigns = campaignFilter === 'all' ? campaigns
+                        : campaignFilter === 'ready' ? readyCampaigns
+                        : campaignFilter === 'active' ? activeCampaigns
+                        : campaignFilter === 'error' ? errorCampaigns
+                        : completedCampaigns;
+
+                      return campaigns.length === 0 ? (
                       <div className="py-12 text-center">
                         <Send className="h-10 w-10 mx-auto mb-4 text-gray-300" />
                         <p className="text-gray-500">No campaigns yet. Campaigns are created from leads.</p>
                       </div>
                     ) : (
+                      <>
+                      <div className="flex items-center gap-1 mb-4 border-b border-gray-200">
+                        {([
+                          { key: 'ready' as const, label: 'Ready', count: readyCampaigns.length },
+                          { key: 'active' as const, label: 'Active', count: activeCampaigns.length },
+                          ...(errorCampaigns.length > 0 ? [{ key: 'error' as const, label: 'Errors', count: errorCampaigns.length }] : []),
+                          { key: 'completed' as const, label: 'Completed', count: completedCampaigns.length },
+                          { key: 'all' as const, label: 'All', count: campaigns.length },
+                        ]).map(({ key, label, count }) => (
+                          <button
+                            key={key}
+                            onClick={() => setCampaignFilter(key)}
+                            className={`px-3 py-2 text-sm font-medium border-b-2 transition-colors ${
+                              campaignFilter === key
+                                ? key === 'error' ? 'border-red-500 text-red-600' : 'border-indigo-600 text-indigo-600'
+                                : key === 'error' ? 'border-transparent text-red-400 hover:text-red-600' : 'border-transparent text-gray-500 hover:text-gray-700'
+                            }`}
+                          >
+                            {label} <span className={`ml-1 text-xs ${key === 'error' ? 'text-red-400' : 'text-gray-400'}`}>{count}</span>
+                          </button>
+                        ))}
+                      </div>
+                      {displayCampaigns.length === 0 ? (
+                        <div className="py-12 text-center">
+                          <p className="text-gray-500">
+                            {campaignFilter === 'active' ? 'No active campaigns yet. Add leads to a campaign to activate it.' :
+                             campaignFilter === 'ready' ? 'No campaigns waiting for leads.' :
+                             campaignFilter === 'error' ? 'No errored campaigns.' :
+                             campaignFilter === 'completed' ? 'No completed campaigns.' :
+                             'No campaigns.'}
+                          </p>
+                        </div>
+                      ) : (
                       <div className="space-y-3">
-                        {campaigns.map((campaign) => {
+                        {displayCampaigns.map((campaign) => {
                           const isExpanded = expandedCampaign === campaign.id;
                           const matchedLeads = leads.filter((l: any) => l.campaign_id === campaign.id);
+                          const effectiveStatus = getEffectiveStatus(campaign);
 
                           return (
                             <div key={campaign.id} className="rounded-lg border border-gray-200">
@@ -1392,16 +1452,18 @@ export function Dashboard({ userEmail }: DashboardProps) {
                                   <div className="flex-1 min-w-0">
                                     <div className="flex items-center gap-2 mb-1">
                                       <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium ${
-                                        campaign.status === 'active' ? 'bg-green-100 text-green-700' :
-                                        campaign.status === 'paused' ? 'bg-yellow-100 text-yellow-700' :
+                                        effectiveStatus === 'active' ? 'bg-green-100 text-green-700' :
+                                        effectiveStatus === 'error' ? 'bg-red-100 text-red-700' :
+                                        effectiveStatus === 'ready' ? 'bg-blue-100 text-blue-700' :
                                         'bg-gray-100 text-gray-600'
                                       }`}>
                                         <span className={`w-1.5 h-1.5 rounded-full ${
-                                          campaign.status === 'active' ? 'bg-green-500' :
-                                          campaign.status === 'paused' ? 'bg-yellow-500' :
+                                          effectiveStatus === 'active' ? 'bg-green-500' :
+                                          effectiveStatus === 'error' ? 'bg-red-500' :
+                                          effectiveStatus === 'ready' ? 'bg-blue-500' :
                                           'bg-gray-400'
                                         }`} />
-                                        {campaign.status}
+                                        {effectiveStatus === 'active' ? 'Active' : effectiveStatus === 'error' ? 'Error' : effectiveStatus === 'ready' ? 'Ready' : 'Completed'}
                                       </span>
                                       {campaign.persona && (
                                         <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-indigo-50 text-indigo-700">
@@ -1510,7 +1572,10 @@ export function Dashboard({ userEmail }: DashboardProps) {
                           );
                         })}
                       </div>
-                    )}
+                      )}
+                      </>
+                    );
+                    })()}
                   </div>
                 )}
               </>
@@ -1698,6 +1763,62 @@ export function Dashboard({ userEmail }: DashboardProps) {
                   {selectedLead.url}
                 </a>
               </div>
+
+              {/* Campaign Preview */}
+              {(() => {
+                const drawerCampaignId = selectedLead.suggested_campaign_id || (selectedLead.campaign_status === 'routed' ? selectedLead.campaign_id : null);
+                const drawerCampaign = drawerCampaignId ? campaigns.find(c => c.id === drawerCampaignId) : null;
+                if (!drawerCampaign) return null;
+                return (
+                  <div className="pt-2 border-t">
+                    <div className="flex items-center gap-2 mb-2">
+                      <p className="text-sm text-gray-500">Campaign</p>
+                      <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium ${
+                        drawerCampaign.status === 'active' ? 'bg-green-100 text-green-700' :
+                        drawerCampaign.status === 'error' ? 'bg-red-100 text-red-700' :
+                        drawerCampaign.status === 'draft' ? 'bg-blue-100 text-blue-700' :
+                        'bg-gray-100 text-gray-600'
+                      }`}>
+                        {drawerCampaign.status === 'error' ? 'Error' : drawerCampaign.status === 'draft' ? 'Ready' : drawerCampaign.status}
+                      </span>
+                      {drawerCampaign.persona && (
+                        <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-indigo-50 text-indigo-700">
+                          {drawerCampaign.persona}
+                        </span>
+                      )}
+                    </div>
+                    <p className="font-medium text-gray-900 text-sm mb-2">{drawerCampaign.name}</p>
+                    {loadingLeadDrawerEmails ? (
+                      <div className="py-4 text-center">
+                        <Loader2 className="h-4 w-4 mx-auto animate-spin text-gray-400" />
+                      </div>
+                    ) : leadDrawerEmails.length === 0 ? (
+                      <p className="text-xs text-gray-400 text-center py-3">No email sequences found.</p>
+                    ) : (
+                      <div className="space-y-2">
+                        {leadDrawerEmails.map((email, i) => (
+                          <div key={email.id} className="rounded-lg border border-gray-200">
+                            <div className="px-3 py-1.5 bg-gray-50 border-b flex items-center justify-between">
+                              <span className="text-[10px] font-semibold text-gray-600 uppercase tracking-wide">
+                                {i === 0 ? 'Initial Email' : `Follow-up ${i}`}
+                              </span>
+                              {email.delay_days > 0 && (
+                                <span className="text-[10px] text-gray-400">+{email.delay_days} days</span>
+                              )}
+                            </div>
+                            <div className="p-3">
+                              {email.subject && (
+                                <p className="text-xs font-medium text-gray-900 mb-1">Subject: {email.subject}</p>
+                              )}
+                              <p className="text-xs text-gray-700 whitespace-pre-wrap leading-relaxed">{email.body}</p>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
             </div>
 
             <div className="p-4 border-t flex gap-2">
@@ -1719,7 +1840,7 @@ export function Dashboard({ userEmail }: DashboardProps) {
                   className="flex-1"
                 >
                   <Send className={`h-4 w-4 mr-2 ${routingLeads.has(selectedLead.id) ? 'animate-spin' : ''}`} />
-                  {routingLeads.has(selectedLead.id) ? 'Adding...' : `Add to ${campaigns.find(c => c.id === selectedLead.suggested_campaign_id)?.name || 'Campaign'}`}
+                  {routingLeads.has(selectedLead.id) ? 'Adding...' : 'Add to Campaign'}
                 </Button>
               )}
               {selectedLead.enrichment_status === 'enriched' && selectedLead.email && !selectedLead.suggested_campaign_id && selectedLead.campaign_status !== 'routed' && selectedLead.campaign_status !== 'skipped' && (
@@ -1769,9 +1890,12 @@ export function Dashboard({ userEmail }: DashboardProps) {
                 <h3 className="font-semibold text-lg">{previewCampaign.campaign.name}</h3>
                 <div className="flex items-center gap-2 mt-1">
                   <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium ${
-                    previewCampaign.campaign.status === 'active' ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-600'
+                    previewCampaign.campaign.status === 'active' ? 'bg-green-100 text-green-700' :
+                    previewCampaign.campaign.status === 'error' ? 'bg-red-100 text-red-700' :
+                    previewCampaign.campaign.status === 'draft' ? 'bg-blue-100 text-blue-700' :
+                    'bg-gray-100 text-gray-600'
                   }`}>
-                    {previewCampaign.campaign.status}
+                    {previewCampaign.campaign.status === 'draft' ? 'Ready' : previewCampaign.campaign.status === 'error' ? 'Error' : previewCampaign.campaign.status}
                   </span>
                   {previewCampaign.campaign.persona && (
                     <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-indigo-50 text-indigo-700">
