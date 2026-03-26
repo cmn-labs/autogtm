@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import Link from 'next/link';
 import { Button } from '@/components/ui/button';
 import { Header, useSelectedCompany } from '@/components/Header';
@@ -160,11 +160,14 @@ export function Dashboard({ userEmail }: DashboardProps) {
   const [sendingAccountsOpen, setSendingAccountsOpen] = useState(false);
   const [expandedCampaign, setExpandedCampaign] = useState<string | null>(null);
   const [leadFilter, setLeadFilter] = useState<'all' | 'suggested' | 'routed' | 'pending' | 'skipped'>('all');
-  const [campaignFilter, setCampaignFilter] = useState<'all' | 'ready' | 'active' | 'error' | 'completed'>('ready');
-  const [previewCampaign, setPreviewCampaign] = useState<{ campaign: Campaign; emails: CampaignEmail[] } | null>(null);
+  const [campaignFilter, setCampaignFilter] = useState<'all' | 'ready' | 'active' | 'error' | 'completed'>('active');
+  const [previewCampaign, setPreviewCampaign] = useState<{ campaign: Campaign; emails: CampaignEmail[]; leadContext?: Lead | null } | null>(null);
   const [loadingCampaignPreview, setLoadingCampaignPreview] = useState(false);
-  const [leadDrawerEmails, setLeadDrawerEmails] = useState<CampaignEmail[]>([]);
-  const [loadingLeadDrawerEmails, setLoadingLeadDrawerEmails] = useState(false);
+  const [editingEmails, setEditingEmails] = useState<Array<{ step: number; subject: string; body: string }> | null>(null);
+  const [savingEmails, setSavingEmails] = useState(false);
+  const [aiInstruction, setAiInstruction] = useState('');
+  const [rewritingEmails, setRewritingEmails] = useState(false);
+  const previewScrollRef = useRef<HTMLDivElement>(null);
   const [promptOpen, setPromptOpen] = useState(false);
   const [guideOpen, setGuideOpen] = useState(false);
   const [companyProfileOpen, setCompanyProfileOpen] = useState(false);
@@ -204,17 +207,6 @@ export function Dashboard({ userEmail }: DashboardProps) {
 
     return () => clearInterval(interval);
   }, [leads.some(l => l.enrichment_status === 'enriching' || l.campaign_status === 'pending'), companyId]);
-
-  useEffect(() => {
-    const campaignId = selectedLead?.suggested_campaign_id || (selectedLead?.campaign_status === 'routed' ? selectedLead?.campaign_id : null);
-    if (!campaignId) { setLeadDrawerEmails([]); return; }
-    setLoadingLeadDrawerEmails(true);
-    fetch(`/api/campaigns/${campaignId}/emails`)
-      .then(res => res.ok ? res.json() : null)
-      .then(data => { if (data?.emails) setLeadDrawerEmails(data.emails); })
-      .catch(() => {})
-      .finally(() => setLoadingLeadDrawerEmails(false));
-  }, [selectedLead?.id, selectedLead?.suggested_campaign_id, selectedLead?.campaign_id]);
 
   const fetchData = async () => {
     setLoading(true);
@@ -449,16 +441,18 @@ export function Dashboard({ userEmail }: DashboardProps) {
     }
   };
 
-  const openCampaignPreview = async (campaignId: string) => {
+  const openCampaignPreview = async (campaignId: string, leadCtx?: Lead | null) => {
     const campaign = campaigns.find(c => c.id === campaignId);
     if (!campaign) return;
     setLoadingCampaignPreview(true);
-    setPreviewCampaign({ campaign, emails: [] });
+    setEditingEmails(null);
+    setAiInstruction('');
+    setPreviewCampaign({ campaign, emails: [], leadContext: leadCtx || null });
     try {
       const res = await fetch(`/api/campaigns/${campaignId}/emails`);
       if (res.ok) {
         const data = await res.json();
-        setPreviewCampaign({ campaign, emails: data.emails || [] });
+        setPreviewCampaign({ campaign, emails: data.emails || [], leadContext: leadCtx || null });
       }
     } catch {} finally {
       setLoadingCampaignPreview(false);
@@ -1106,12 +1100,11 @@ export function Dashboard({ userEmail }: DashboardProps) {
                                         <div className="flex items-center gap-2">
                                           {routedCampaign && (
                                             <button
-                                              onClick={() => openCampaignPreview(routedCampaign.id)}
-                                              className="inline-flex items-center gap-1 text-xs text-indigo-600 hover:text-indigo-800 font-medium truncate max-w-[180px] transition-colors"
-                                              title={routedCampaign.name}
+                                              onClick={() => openCampaignPreview(routedCampaign.id, lead)}
+                                              className="inline-flex items-center gap-1 text-xs text-indigo-600 hover:text-indigo-800 font-medium whitespace-nowrap transition-colors"
                                             >
                                               <Send className="h-3 w-3 shrink-0" />
-                                              {routedCampaign.name}
+                                              View Campaign
                                             </button>
                                           )}
                                           <span className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium bg-green-50 text-green-700">
@@ -1123,12 +1116,11 @@ export function Dashboard({ userEmail }: DashboardProps) {
                                     })() : suggestedCampaign ? (
                                       <div className="flex items-center gap-3">
                                         <button
-                                          onClick={() => openCampaignPreview(suggestedCampaign.id)}
-                                          className="inline-flex items-center gap-1 text-xs text-indigo-600 hover:text-indigo-800 font-medium truncate max-w-[180px] transition-colors"
-                                          title={suggestedCampaign.name}
+                                          onClick={() => openCampaignPreview(suggestedCampaign.id, lead)}
+                                          className="inline-flex items-center gap-1 text-xs text-indigo-600 hover:text-indigo-800 font-medium whitespace-nowrap transition-colors"
                                         >
                                           <Send className="h-3 w-3 shrink-0" />
-                                          {suggestedCampaign.name}
+                                          View Campaign
                                         </button>
                                         <div className="flex items-center gap-1.5">
                                           <button
@@ -1496,7 +1488,7 @@ export function Dashboard({ userEmail }: DashboardProps) {
                                       </Button>
                                     )}
                                     <a
-                                      href={`https://app.instantly.ai/app/campaign/${campaign.instantly_campaign_id}/analytics`}
+                                      href={`https://app.instantly.ai/app/campaign/${campaign.instantly_campaign_id}/sequences`}
                                       target="_blank"
                                       rel="noopener noreferrer"
                                     >
@@ -1771,51 +1763,27 @@ export function Dashboard({ userEmail }: DashboardProps) {
                 if (!drawerCampaign) return null;
                 return (
                   <div className="pt-2 border-t">
-                    <div className="flex items-center gap-2 mb-2">
-                      <p className="text-sm text-gray-500">Campaign</p>
-                      <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium ${
-                        drawerCampaign.status === 'active' ? 'bg-green-100 text-green-700' :
-                        drawerCampaign.status === 'error' ? 'bg-red-100 text-red-700' :
-                        drawerCampaign.status === 'draft' ? 'bg-blue-100 text-blue-700' :
-                        'bg-gray-100 text-gray-600'
-                      }`}>
-                        {drawerCampaign.status === 'error' ? 'Error' : drawerCampaign.status === 'draft' ? 'Ready' : drawerCampaign.status}
-                      </span>
-                      {drawerCampaign.persona && (
-                        <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-indigo-50 text-indigo-700">
-                          {drawerCampaign.persona}
+                    <p className="text-sm text-gray-500 mb-2">Campaign</p>
+                    <button
+                      onClick={() => openCampaignPreview(drawerCampaign.id, selectedLead)}
+                      className="w-full flex items-center justify-between p-3 rounded-lg border border-gray-200 hover:border-indigo-300 hover:bg-indigo-50/30 transition-colors group"
+                    >
+                      <div className="flex items-center gap-2 min-w-0">
+                        <Send className="h-3.5 w-3.5 text-indigo-500 shrink-0" />
+                        <span className="text-sm font-medium text-gray-900 truncate">{drawerCampaign.name}</span>
+                      </div>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium ${
+                          drawerCampaign.status === 'active' ? 'bg-green-100 text-green-700' :
+                          drawerCampaign.status === 'error' ? 'bg-red-100 text-red-700' :
+                          drawerCampaign.status === 'draft' ? 'bg-blue-100 text-blue-700' :
+                          'bg-gray-100 text-gray-600'
+                        }`}>
+                          {drawerCampaign.status === 'error' ? 'Error' : drawerCampaign.status === 'draft' ? 'Ready' : drawerCampaign.status}
                         </span>
-                      )}
-                    </div>
-                    <p className="font-medium text-gray-900 text-sm mb-2">{drawerCampaign.name}</p>
-                    {loadingLeadDrawerEmails ? (
-                      <div className="py-4 text-center">
-                        <Loader2 className="h-4 w-4 mx-auto animate-spin text-gray-400" />
+                        <span className="text-xs text-indigo-600 font-medium">View &amp; Edit</span>
                       </div>
-                    ) : leadDrawerEmails.length === 0 ? (
-                      <p className="text-xs text-gray-400 text-center py-3">No email sequences found.</p>
-                    ) : (
-                      <div className="space-y-2">
-                        {leadDrawerEmails.map((email, i) => (
-                          <div key={email.id} className="rounded-lg border border-gray-200">
-                            <div className="px-3 py-1.5 bg-gray-50 border-b flex items-center justify-between">
-                              <span className="text-[10px] font-semibold text-gray-600 uppercase tracking-wide">
-                                {i === 0 ? 'Initial Email' : `Follow-up ${i}`}
-                              </span>
-                              {email.delay_days > 0 && (
-                                <span className="text-[10px] text-gray-400">+{email.delay_days} days</span>
-                              )}
-                            </div>
-                            <div className="p-3">
-                              {email.subject && (
-                                <p className="text-xs font-medium text-gray-900 mb-1">Subject: {email.subject}</p>
-                              )}
-                              <p className="text-xs text-gray-700 whitespace-pre-wrap leading-relaxed">{email.body}</p>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    )}
+                    </button>
                   </div>
                 );
               })()}
@@ -1883,9 +1851,9 @@ export function Dashboard({ userEmail }: DashboardProps) {
 
       {/* Campaign Preview Modal */}
       {previewCampaign && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50" onClick={() => setPreviewCampaign(null)}>
-          <div className="bg-white rounded-xl max-w-2xl w-full max-h-[85vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
-            <div className="flex items-center justify-between p-4 border-b">
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50" onClick={() => { setPreviewCampaign(null); setEditingEmails(null); setAiInstruction(''); }}>
+          <div className="bg-white rounded-xl max-w-2xl w-full max-h-[85vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between p-4 border-b shrink-0">
               <div>
                 <h3 className="font-semibold text-lg">{previewCampaign.campaign.name}</h3>
                 <div className="flex items-center gap-2 mt-1">
@@ -1902,14 +1870,29 @@ export function Dashboard({ userEmail }: DashboardProps) {
                       {previewCampaign.campaign.persona}
                     </span>
                   )}
+                  {editingEmails && (
+                    <button
+                      onClick={() => setEditingEmails(null)}
+                      className="ml-2 text-xs text-gray-500 hover:text-gray-700 font-medium"
+                    >
+                      Cancel Edit
+                    </button>
+                  )}
                 </div>
               </div>
-              <button onClick={() => setPreviewCampaign(null)} className="text-gray-400 hover:text-gray-600">
+              <button onClick={() => { setPreviewCampaign(null); setEditingEmails(null); setAiInstruction(''); }} className="text-gray-400 hover:text-gray-600">
                 <X className="h-5 w-5" />
               </button>
             </div>
 
-            <div className="p-4 space-y-4">
+            {previewCampaign.leadContext && (
+              <div className="px-4 py-2 bg-indigo-50/50 border-b text-xs text-indigo-700 shrink-0">
+                Viewing for: <span className="font-medium">{previewCampaign.leadContext.full_name || previewCampaign.leadContext.name}</span>
+                {previewCampaign.leadContext.title && <span className="text-indigo-500"> · {previewCampaign.leadContext.title}</span>}
+              </div>
+            )}
+
+            <div ref={previewScrollRef} className="p-4 space-y-4 overflow-y-auto flex-1">
               {loadingCampaignPreview ? (
                 <div className="py-8 text-center">
                   <Loader2 className="h-6 w-6 mx-auto animate-spin text-gray-400" />
@@ -1917,41 +1900,221 @@ export function Dashboard({ userEmail }: DashboardProps) {
               ) : previewCampaign.emails.length === 0 ? (
                 <p className="text-gray-500 text-sm text-center py-8">No email sequences found for this campaign.</p>
               ) : (
-                previewCampaign.emails.map((email, i) => (
-                  <div key={email.id} className="rounded-lg border border-gray-200">
+                (editingEmails || previewCampaign.emails).map((email, i) => (
+                  <div key={i} className={`rounded-lg border ${editingEmails ? 'border-indigo-200' : 'border-gray-200'}`}>
                     <div className="px-4 py-2 bg-gray-50 border-b flex items-center justify-between">
                       <span className="text-xs font-semibold text-gray-600 uppercase tracking-wide">
                         {i === 0 ? 'Initial Email' : `Follow-up ${i}`}
                       </span>
-                      {email.delay_days > 0 && (
-                        <span className="text-xs text-gray-400">+{email.delay_days} days</span>
+                      {'delay_days' in email && (email as any).delay_days > 0 && (
+                        <span className="text-xs text-gray-400">+{(email as any).delay_days} days</span>
                       )}
                     </div>
                     <div className="p-4">
-                      {email.subject && (
-                        <p className="text-sm font-medium text-gray-900 mb-2">
-                          Subject: {email.subject}
-                        </p>
+                      {editingEmails ? (
+                        <>
+                          <div className="mb-3">
+                            <label className="text-[10px] font-medium text-gray-500 uppercase tracking-wide">Subject</label>
+                            <input
+                              value={editingEmails[i]?.subject || ''}
+                              onChange={(e) => {
+                                const updated = [...editingEmails];
+                                updated[i] = { ...updated[i], subject: e.target.value };
+                                setEditingEmails(updated);
+                              }}
+                              className="w-full mt-1 px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                              placeholder={i === 0 ? 'Subject line...' : '(empty = threads)'}
+                            />
+                          </div>
+                          <div>
+                            <label className="text-[10px] font-medium text-gray-500 uppercase tracking-wide">Body</label>
+                            <textarea
+                              value={editingEmails[i]?.body || ''}
+                              onChange={(e) => {
+                                const updated = [...editingEmails];
+                                updated[i] = { ...updated[i], body: e.target.value };
+                                setEditingEmails(updated);
+                              }}
+                              rows={8}
+                              className="w-full mt-1 px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent resize-y leading-relaxed"
+                            />
+                          </div>
+                        </>
+                      ) : (
+                        <>
+                          {email.subject && (
+                            <p className="text-sm font-medium text-gray-900 mb-2">Subject: {email.subject}</p>
+                          )}
+                          <p className="text-sm text-gray-700 whitespace-pre-wrap leading-relaxed">{email.body}</p>
+                        </>
                       )}
-                      <p className="text-sm text-gray-700 whitespace-pre-wrap leading-relaxed">{email.body}</p>
                     </div>
                   </div>
                 ))
               )}
+
+              {/* AI Rewrite section — disabled for now
+              {editingEmails && (
+                <div className="rounded-lg border border-dashed border-indigo-300 bg-indigo-50/30 p-3">
+                  <label className="text-xs font-medium text-indigo-700 mb-2 block">AI Rewrite — tell the AI what to change</label>
+                  {previewCampaign.leadContext && (
+                    <p className="text-[10px] text-indigo-500 mb-2">Lead context ({previewCampaign.leadContext.full_name || previewCampaign.leadContext.name}) will be included automatically</p>
+                  )}
+                  <div className="flex gap-2">
+                    <input
+                      value={aiInstruction}
+                      onChange={(e) => setAiInstruction(e.target.value)}
+                      onKeyDown={async (e) => {
+                        if (e.key === 'Enter' && !e.shiftKey && aiInstruction.trim() && !rewritingEmails) {
+                          e.preventDefault();
+                          setRewritingEmails(true);
+                          try {
+                            const lc = previewCampaign.leadContext;
+                            const res = await fetch(`/api/campaigns/${previewCampaign.campaign.id}/rewrite`, {
+                              method: 'POST',
+                              headers: { 'Content-Type': 'application/json' },
+                              body: JSON.stringify({
+                                instructions: aiInstruction,
+                                leadContext: lc ? { name: lc.full_name || lc.name, bio: lc.bio, title: lc.title, url: lc.url, expertise: lc.expertise, platform: lc.platform } : null,
+                              }),
+                            });
+                            if (res.ok) {
+                              const data = await res.json();
+                              if (data.emails?.length) {
+                                setEditingEmails(data.emails);
+                                setAiInstruction('');
+                                toast({ title: 'Emails rewritten' });
+                                previewScrollRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
+                              } else {
+                                toast({ variant: 'destructive', title: 'Rewrite failed', description: 'AI returned empty result' });
+                              }
+                            } else {
+                              const err = await res.json();
+                              toast({ variant: 'destructive', title: 'Rewrite failed', description: err.error });
+                            }
+                          } catch (err: any) {
+                            toast({ variant: 'destructive', title: 'Error', description: err.message });
+                          } finally {
+                            setRewritingEmails(false);
+                          }
+                        }
+                      }}
+                      placeholder='e.g. "Start with mentioning their podcast" or "Make it shorter and punchier"'
+                      className="flex-1 px-3 py-2 text-sm border border-indigo-200 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                      disabled={rewritingEmails}
+                    />
+                    <Button
+                      size="sm"
+                      disabled={!aiInstruction.trim() || rewritingEmails}
+                      onClick={async () => {
+                        if (!aiInstruction.trim()) return;
+                        setRewritingEmails(true);
+                        try {
+                          const lc = previewCampaign.leadContext;
+                          const res = await fetch(`/api/campaigns/${previewCampaign.campaign.id}/rewrite`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                              instructions: aiInstruction,
+                              leadContext: lc ? { name: lc.full_name || lc.name, bio: lc.bio, title: lc.title, url: lc.url, expertise: lc.expertise, platform: lc.platform } : null,
+                            }),
+                          });
+                          if (res.ok) {
+                            const data = await res.json();
+                            if (data.emails?.length) {
+                              setEditingEmails(data.emails);
+                              setAiInstruction('');
+                              toast({ title: 'Emails rewritten' });
+                              previewScrollRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
+                            } else {
+                              toast({ variant: 'destructive', title: 'Rewrite failed', description: 'AI returned empty result' });
+                            }
+                          } else {
+                            const err = await res.json();
+                            toast({ variant: 'destructive', title: 'Rewrite failed', description: err.error });
+                          }
+                        } catch (err: any) {
+                          toast({ variant: 'destructive', title: 'Error', description: err.message });
+                        } finally {
+                          setRewritingEmails(false);
+                        }
+                      }}
+                      className="shrink-0"
+                    >
+                      {rewritingEmails ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Rewrite'}
+                    </Button>
+                  </div>
+                </div>
+              )}
+              */}
             </div>
 
-            <div className="p-4 border-t flex gap-2">
-              <a
-                href={`https://app.instantly.ai/app/campaign/${previewCampaign.campaign.instantly_campaign_id}/analytics`}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="flex-1"
-              >
-                <Button variant="outline" className="w-full">
-                  <ExternalLink className="h-4 w-4 mr-2" />
-                  Open in Instantly
-                </Button>
-              </a>
+            <div className="p-4 border-t flex flex-col gap-2 shrink-0">
+              {editingEmails ? (
+                <div className="flex gap-2">
+                  <Button
+                    variant="outline"
+                    className="flex-1 border-red-200 text-red-600 hover:bg-red-50 hover:text-red-700"
+                    onClick={() => setEditingEmails(null)}
+                  >
+                    Cancel
+                  </Button>
+                  <Button
+                    className="flex-1"
+                    disabled={savingEmails}
+                    onClick={async () => {
+                      setSavingEmails(true);
+                      try {
+                        const res = await fetch(`/api/campaigns/${previewCampaign.campaign.id}/emails`, {
+                          method: 'PATCH',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ emails: editingEmails }),
+                        });
+                        if (res.ok) {
+                          // Refetch from DB to get the saved state
+                          const freshRes = await fetch(`/api/campaigns/${previewCampaign.campaign.id}/emails`);
+                          if (freshRes.ok) {
+                            const freshData = await freshRes.json();
+                            setPreviewCampaign({ ...previewCampaign, emails: freshData.emails || [] });
+                          }
+                          setEditingEmails(null);
+                          toast({ title: 'Saved', description: 'Campaign emails updated in Instantly' });
+                        } else {
+                          const err = await res.json();
+                          toast({ variant: 'destructive', title: 'Save failed', description: err.error });
+                        }
+                      } catch (err: any) {
+                        toast({ variant: 'destructive', title: 'Error', description: err.message });
+                      } finally {
+                        setSavingEmails(false);
+                      }
+                    }}
+                  >
+                    {savingEmails ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Saving...</> : 'Save to Instantly'}
+                  </Button>
+                </div>
+              ) : (
+                <>
+                  {!loadingCampaignPreview && previewCampaign.emails.length > 0 && (
+                    <Button
+                      className="w-full"
+                      onClick={() => setEditingEmails(previewCampaign.emails.map(e => ({ step: e.step, subject: e.subject, body: e.body })))}
+                    >
+                      Edit Emails
+                    </Button>
+                  )}
+                  <a
+                    href={`https://app.instantly.ai/app/campaign/${previewCampaign.campaign.instantly_campaign_id}/sequences`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    <Button variant="outline" className="w-full">
+                      <ExternalLink className="h-4 w-4 mr-2" />
+                      Open in Instantly
+                    </Button>
+                  </a>
+                </>
+              )}
             </div>
           </div>
         </div>

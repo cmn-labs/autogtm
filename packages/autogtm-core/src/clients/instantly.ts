@@ -136,6 +136,27 @@ export async function activateCampaign(campaignId: string): Promise<void> {
 }
 
 /**
+ * Update campaign email sequences in Instantly
+ */
+export async function updateCampaignSequences(
+  campaignId: string,
+  steps: Array<{ subject: string; body: string; delayMinutes: number }>
+): Promise<void> {
+  const sequences = [{
+    steps: steps.map((step) => ({
+      type: 'email',
+      delay: step.delayMinutes,
+      variants: [{ subject: step.subject, body: step.body }],
+    })),
+  }];
+
+  await instantlyFetch(`/campaigns/${campaignId}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ sequences }),
+  });
+}
+
+/**
  * Pause a campaign
  */
 export async function pauseCampaign(campaignId: string): Promise<void> {

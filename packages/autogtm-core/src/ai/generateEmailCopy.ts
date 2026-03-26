@@ -198,6 +198,71 @@ Personalize this email while keeping the core message intact.`;
 }
 
 /**
+ * Rewrite campaign emails based on user instructions + optional lead context
+ */
+export async function rewriteCampaignEmails(params: {
+  emails: Array<{ step: number; subject: string; body: string }>;
+  instructions: string;
+  leadContext?: { name?: string; bio?: string; title?: string; url?: string; expertise?: string[]; platform?: string } | null;
+  companyContext?: { name: string; description: string } | null;
+  customPrompt?: string | null;
+}): Promise<Array<{ step: number; subject: string; body: string }>> {
+  const openai = getOpenAIClient();
+
+  const baseRules = params.customPrompt || DEFAULT_EMAIL_PROMPT;
+
+  const currentEmails = params.emails.map(e =>
+    `--- Step ${e.step} ---\nSubject: ${e.subject}\nBody:\n${e.body}`
+  ).join('\n\n');
+
+  let leadSection = '';
+  if (params.leadContext) {
+    const lc = params.leadContext;
+    leadSection = `\n\nLEAD CONTEXT (use this to personalize if the instructions ask for it):
+Name: ${lc.name || 'Unknown'}
+Title: ${lc.title || ''}
+Bio: ${lc.bio || ''}
+Platform: ${lc.platform || ''}
+URL: ${lc.url || ''}
+Expertise: ${lc.expertise?.join(', ') || ''}`;
+  }
+
+  const systemPrompt = `${baseRules}
+
+You are editing an existing email sequence. Apply the user's instructions to rewrite the emails.
+Keep the same number of emails. Preserve the step numbers.
+Follow-up subjects should be "" (empty string) so they thread.
+${params.companyContext ? `\nCompany: ${params.companyContext.name}\nProduct: ${params.companyContext.description}` : ''}${leadSection}
+
+Return JSON array: [{ "step": 0, "subject": "...", "body": "..." }, ...]`;
+
+  const response = await openai.chat.completions.create({
+    model: 'gpt-4o',
+    messages: [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: `CURRENT EMAILS:\n${currentEmails}\n\nINSTRUCTIONS:\n${params.instructions}` },
+    ],
+    response_format: { type: 'json_object' },
+    temperature: 0.7,
+  });
+
+  const content = response.choices[0]?.message?.content;
+  if (!content) throw new Error('No response from OpenAI');
+
+  const parsed = JSON.parse(content);
+  let emails: any[];
+  if (Array.isArray(parsed)) {
+    emails = parsed;
+  } else {
+    // json_object wraps in an object — find the first array value
+    const arrayVal = Object.values(parsed).find(v => Array.isArray(v)) as any[] | undefined;
+    emails = arrayVal || [];
+  }
+  if (emails.length === 0) throw new Error('AI returned no emails');
+  return emails.map((e: any, i: number) => ({ step: e.step ?? i, subject: e.subject || '', body: e.body }));
+}
+
+/**
  * Improve email copy based on performance data
  */
 export async function improveEmailCopy(params: {
