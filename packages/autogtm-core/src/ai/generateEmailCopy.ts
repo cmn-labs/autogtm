@@ -24,6 +24,33 @@ const EmailSequenceSchema = z.object({
   }).optional(),
 });
 
+function stripForbiddenDashes(text: string): string {
+  return text
+    .replace(/—/g, ',')
+    .replace(/--/g, ',');
+}
+
+function sanitizeSequence(sequence: GeneratedEmailSequence): GeneratedEmailSequence {
+  return {
+    initial: {
+      subject: stripForbiddenDashes(sequence.initial.subject),
+      body: stripForbiddenDashes(sequence.initial.body),
+    },
+    followUp1: {
+      subject: stripForbiddenDashes(sequence.followUp1.subject),
+      body: stripForbiddenDashes(sequence.followUp1.body),
+      delayDays: sequence.followUp1.delayDays,
+    },
+    followUp2: sequence.followUp2
+      ? {
+          subject: stripForbiddenDashes(sequence.followUp2.subject),
+          body: stripForbiddenDashes(sequence.followUp2.body),
+          delayDays: sequence.followUp2.delayDays,
+        }
+      : undefined,
+  };
+}
+
 function getOpenAIClient(): OpenAI {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) {
@@ -43,67 +70,47 @@ export interface GenerateEmailParams {
   customPrompt?: string | null; // Custom system prompt. If null/undefined, uses default.
 }
 
-export const DEFAULT_EMAIL_PROMPT = `You write outbound email sequences on behalf of a company founder. You sound like a confident, grounded, product-first founder.
+export const DEFAULT_EMAIL_PROMPT = `You write cold outbound email sequences for founders.
 
-Your communication style is direct, concise, data-backed, and highly personalized. You write like a real founder who has done the work, not like a marketer. Short paragraphs. Clean structure. No fluff.
+Write like a real human founder, not a sales rep. Keep it natural, concise, conversational, and partnership-first.
 
-Focus on real customer impact. Use specific proof points provided in the company context: user counts, time saved, measurable outcomes, social proof links. Do not mention revenue, ARR, fundraising, valuation, or corporate background.
+Core style:
+- Friendly but professional
+- Direct and clear
+- Short paragraphs (1 to 3 sentences)
+- Personalized opener using the lead/persona context provided
+- Sound like one person writing to another person
+- Slightly warm and approachable; avoid stiff, robotic phrasing
+- Slightly flowing sentences are OK; avoid choppy one-liner stacks
 
-Tone guidelines:
-- Confident but calm
-- Conversational but professional
-- No hype
-- No corporate jargon
-- No exclamation marks
-- ABSOLUTELY NO EM DASHES (— or --). Use commas, periods, or semicolons instead. This is critical. DO NOT LOOK LIKE AN AI.
-- No buzzwords like exciting, thrilled, empower, streamline, leverage
-- No generic flattery
+Hard rules:
+- Use {{firstName}} as the only variable
+- Plain text only, no HTML, no bullets in email bodies
+- Follow-up subjects must be ""
+- No em dashes (— or --)
+- No corporate jargon or hype language
+- Do not fabricate specific content titles, episodes, or posts
+- Do not mention ARR, fundraising, valuation, or internal finance metrics
 
-Formatting rules:
-- {{firstName}} is the ONLY personalization variable
-- Plain text only
-- No HTML
-- No bullet points
-- Paragraphs must be 1 to 3 sentences max
-- Sign off with the sender's first name. Never "[Your Name]".
-- Follow-up subject lines must be "" so they thread.
+Sequence expectations:
+- Initial email: around 120 to 180 words, clear opener + founder intro + plain-English product explanation + one concise proof block + soft partnership CTA
+- Do not include calendar link in initial email unless explicitly requested by product context
+- Follow-up 1: around 45 to 80 words, new angle, no calendar link
+- Follow-up 2: around 45 to 70 words, brief/respectful, include calendar link when provided
 
-STRUCTURE FOR THE SEQUENCE:
+Personalization guidance:
+- If lead-specific context is provided (bio/category/platform/expertise), use it in the opener in a grounded way
+- Reference type of work, not invented specifics
+- Keep the message targeted to this lead's world
+- Preferred opener pattern:
+  - Start: Hey {{firstName}}, (or Hey {{firstName}}! when it feels natural)
+  - Then a natural line such as "Came across your work around..." or "Saw your work in..."
+  - Keep the first 2 lines conversational before pitching
 
-INITIAL EMAIL:
-- Start with: Hey {{firstName}},
-- First sentence must reference something specific about the persona. It must feel researched and relevant.
-- Introduce yourself and the product in 1 to 2 tight sentences.
-- Include high-level proof points if available (user counts, time saved, measurable outcomes).
-- Link to social proof page if provided.
-- End with a soft CTA like "Mind if I send over more details?" or "Open to exploring this?" or "Would love to offer access and chat about it."
-- Do NOT include the calendar link in the initial email.
-- Length: 120 to 150 words.
-
-FOLLOW-UP 1 (+3 days):
-- Different angle or tighter framing of value
-- Keep it short, 50 to 80 words
-- Reinforce one key outcome
-- End with "Open to a quick chat?" or similar
-- No calendar link yet.
-
-FOLLOW-UP 2 (+4 days):
-- Brief and final, 50 to 80 words
-- Respectful tone
-- Include the calendar link if provided.
-
-NEVER DO THESE:
-- "I hope this finds you well", "I'm reaching out from", "I represent"
-- Em dashes (— or --) anywhere in the text. NEVER use them.
-- "exciting", "thrilled", "empower", "streamline", "leverage"
-- "{{company_name}}" variable (doesn't exist)
-- Generic flattery that doesn't match the persona
-- Generic praise that does not match their role
-- Long run-on paragraphs
-- Over-sharing internal metrics
-- Using more than one personalization variable
-
-Your job is to write founder-led outbound that feels researched, credible, grounded, and aligned with real customer outcomes.`;
+Tone and close:
+- Keep the final ask low-pressure and friendly
+- Avoid menu-like "options include..." phrasing unless needed
+- Close naturally with sender name, no template-y language.`;
 
 /**
  * Generate a complete email sequence (initial + follow-ups)
@@ -134,7 +141,10 @@ Value: ${params.valueProposition}
 Persona: ${params.targetPersona}
 CTA: ${cta}
 
-Remember: the opener must be specifically relevant to this persona type. Not generic.`;
+Remember:
+- The opener must be specifically relevant to this persona/lead context. Not generic.
+- If persona includes lead bio/category/platform details, incorporate them naturally in line 1.
+- Keep tone human and conversational, not polished AI copy.`;
 
   const response = await openai.chat.completions.create({
     model: 'gpt-5-mini',
@@ -150,7 +160,8 @@ Remember: the opener must be specifically relevant to this persona type. Not gen
     throw new Error('No response from OpenAI');
   }
 
-  return EmailSequenceSchema.parse(JSON.parse(content)) as GeneratedEmailSequence;
+  const parsed = EmailSequenceSchema.parse(JSON.parse(content)) as GeneratedEmailSequence;
+  return sanitizeSequence(parsed);
 }
 
 /**
@@ -249,4 +260,68 @@ Suggest improvements.`;
   }
 
   return JSON.parse(content);
+}
+
+/**
+ * Regenerate an entire sequence using existing copy + user feedback.
+ * Returns a proposed sequence only; caller decides whether to persist.
+ */
+export async function regenerateEmailSequenceWithFeedback(params: {
+  companyName: string;
+  companyDescription: string;
+  valueProposition: string;
+  targetPersona: string;
+  existingSequence: Array<{ step: number; subject: string; body: string; delay_days: number }>;
+  feedback: string;
+  sequenceLength?: number;
+  customPrompt?: string | null;
+}): Promise<GeneratedEmailSequence> {
+  const openai = getOpenAIClient();
+  const numFollowUps = Math.min(Math.max((params.sequenceLength ?? 2) - 1, 0), 2);
+  const basePrompt = params.customPrompt || DEFAULT_EMAIL_PROMPT;
+
+  const jsonInstruction = numFollowUps === 1
+    ? `\n\nReturn JSON with initial + 1 follow-up:\n{ "initial": { "subject": "...", "body": "..." }, "followUp1": { "subject": "", "body": "...", "delayDays": 3 } }`
+    : `\n\nReturn JSON with initial + 2 follow-ups:\n{ "initial": { "subject": "...", "body": "..." }, "followUp1": { "subject": "", "body": "...", "delayDays": 3 }, "followUp2": { "subject": "", "body": "...", "delayDays": 4 } }`;
+
+  const systemPrompt = `${basePrompt}
+
+You are revising an existing draft sequence based on explicit user feedback.
+- Preserve what is already strong.
+- Apply the feedback directly and concretely.
+- Keep the same number of emails as requested.
+- Keep delays practical: followUp1 around 3 days, followUp2 around 4 days.
+- Return only valid JSON.${jsonInstruction}`;
+
+  const userPrompt = `Regenerate this sequence draft.
+
+Sender: ${params.companyName}
+Product: ${params.companyDescription}
+Value: ${params.valueProposition}
+Persona: ${params.targetPersona}
+
+Existing sequence:
+${JSON.stringify(params.existingSequence, null, 2)}
+
+User feedback:
+${params.feedback || 'Improve clarity and make it more personalized.'}
+
+Rewrite the sequence accordingly while keeping it founder-led and grounded.`;
+
+  const response = await openai.chat.completions.create({
+    model: 'gpt-5-mini',
+    messages: [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: userPrompt },
+    ],
+    response_format: { type: 'json_object' },
+  });
+
+  const content = response.choices[0]?.message?.content;
+  if (!content) {
+    throw new Error('No response from OpenAI');
+  }
+
+  const parsed = EmailSequenceSchema.parse(JSON.parse(content)) as GeneratedEmailSequence;
+  return sanitizeSequence(parsed);
 }

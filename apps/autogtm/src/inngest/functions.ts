@@ -9,14 +9,14 @@ import {
   updateCampaignStats,
   createDailyDigest,
   getLeadsByDateRange,
-  getCampaignsWithStats,
   markLeadRouted,
   markLeadSkipped,
   incrementCampaignLeadCount,
   setSuggestedCampaign,
+  getCampaignBySourceLeadId,
 } from '@autogtm/core/db/autogtmDbCalls';
 import { determineCampaignForLead } from '@autogtm/core/ai/determineCampaign';
-import { createCampaignForPersona } from '@autogtm/core/campaigns/createCampaignForPersona';
+import { createDraftCampaignForLead, sendDraftCampaignForLead } from '@autogtm/core/campaigns/createCampaignForPersona';
 import { extractEmailFromEnrichmentData } from '@autogtm/core/ai/extractEmail';
 import { Resend } from 'resend';
 import { createClient } from '@supabase/supabase-js';
@@ -838,7 +838,6 @@ export const enrichLeadJob = inngest.createFunction(
 
     // Suggest a campaign for this lead (user will confirm from dashboard)
     const routingDecision = await step.run('decide-campaign', async () => {
-      const campaigns = await getCampaignsWithStats(companyId);
       return determineCampaignForLead({
         lead: {
           email: resolvedEmail,
@@ -852,9 +851,9 @@ export const enrichLeadJob = inngest.createFunction(
           promotion_fit_score: enrichedData.promotion_fit_score,
           promotion_fit_reason: enrichedData.promotion_fit_reason,
         },
-        campaigns,
+        campaigns: [],
         company: { name: company.name, description: company.description, target_audience: company.target_audience },
-        autoMode: !!company.auto_add_enabled,
+        autoMode: true,
       });
     });
 
@@ -865,21 +864,20 @@ export const enrichLeadJob = inngest.createFunction(
       return { leadId, fullName: enrichedData.full_name, category: enrichedData.category, fitScore: enrichedData.promotion_fit_score, routing: { action: 'skipped' } };
     }
 
-    // Create campaign if needed, then set as suggestion (don't add lead yet)
-    let suggestedCampaignId: string;
-
-    if (routingDecision.action === 'create_new') {
-      const newCampaign = await step.run('create-campaign', () =>
-        createCampaignForPersona({
-          company: { id: companyId, name: company.name, description: company.description, target_audience: company.target_audience, sending_emails: company.sending_emails, default_sequence_length: company.default_sequence_length, email_prompt: company.email_prompt },
-          suggestedName: routingDecision.suggestedName,
-          suggestedPersona: routingDecision.suggestedPersona,
-        })
-      );
-      suggestedCampaignId = newCampaign.id;
-    } else {
-      suggestedCampaignId = routingDecision.campaignId;
-    }
+    // Create per-lead draft campaign, then set as suggestion.
+    const existingDraft = await step.run('get-existing-draft', () => getCampaignBySourceLeadId(leadId));
+    const campaign = existingDraft || await step.run('create-draft-campaign', () =>
+      createDraftCampaignForLead({
+        company: { id: companyId, name: company.name, description: company.description, target_audience: company.target_audience, sending_emails: company.sending_emails, default_sequence_length: company.default_sequence_length, email_prompt: company.email_prompt },
+        suggestedName: routingDecision.suggestedName,
+        suggestedPersona: routingDecision.suggestedPersona,
+        leadId,
+        leadFullName: enrichedData.full_name,
+        leadBio: enrichedData.bio,
+        leadCategory: enrichedData.category,
+      })
+    );
+    const suggestedCampaignId = campaign.id;
 
     await step.run('set-suggested-campaign', () =>
       setSuggestedCampaign(leadId, suggestedCampaignId, routingDecision.reason)
@@ -894,24 +892,32 @@ export const enrichLeadJob = inngest.createFunction(
       });
 
       const canAutoAdd = campaignData
-        && campaignData.status === 'active'
+        && (campaignData.status === 'active' || campaignData.status === 'draft')
         && campaignData.is_accepting_leads
         && (campaignData.leads_count || 0) < (campaignData.max_leads || 500);
 
       if (campaignData && canAutoAdd && resolvedEmail?.trim() && enrichedData.full_name?.trim()) {
         logger.info(`Auto-adding lead ${leadId} (fit: ${enrichedData.promotion_fit_score}) to campaign ${suggestedCampaignId}`);
-        await step.run('auto-add-to-instantly', () =>
-          addLeadsToCampaign(campaignData.instantly_campaign_id, [{
-            email: resolvedEmail!.trim(),
-            first_name: enrichedData.full_name?.split(' ')[0] || '',
-            variables: { lead_url: leadUrl || '' },
-          }])
-        );
+        if (campaignData.status === 'draft' || !campaignData.instantly_campaign_id) {
+          await step.run('auto-send-draft', () => sendDraftCampaignForLead({
+            campaignId: suggestedCampaignId,
+            leadId,
+            companySendingEmails: company.sending_emails,
+          }));
+        } else {
+          await step.run('auto-add-to-instantly', () =>
+            addLeadsToCampaign(campaignData.instantly_campaign_id, [{
+              email: resolvedEmail!.trim(),
+              first_name: enrichedData.full_name?.split(' ')[0] || '',
+              variables: { lead_url: leadUrl || '' },
+            }])
+          );
 
-        await step.run('auto-mark-routed', async () => {
-          await markLeadRouted(leadId, suggestedCampaignId);
-          await incrementCampaignLeadCount(suggestedCampaignId);
-        });
+          await step.run('auto-mark-routed', async () => {
+            await markLeadRouted(leadId, suggestedCampaignId);
+            await incrementCampaignLeadCount(suggestedCampaignId);
+          });
+        }
 
         return { leadId, fullName: enrichedData.full_name, category: enrichedData.category, fitScore: enrichedData.promotion_fit_score, routing: { action: 'auto_added', campaignId: suggestedCampaignId } };
       }
@@ -943,7 +949,7 @@ export const addLeadToCampaignJob = inngest.createFunction(
     const data = await step.run('get-data', async () => {
       const [{ data: lead }, { data: campaign }] = await Promise.all([
         supabase.from('leads').select('email, full_name, title, bio, url, social_links, total_audience').eq('id', leadId).single(),
-        supabase.from('campaigns').select('instantly_campaign_id').eq('id', campaignId).single(),
+        supabase.from('campaigns').select('id, instantly_campaign_id, status').eq('id', campaignId).single(),
       ]);
       return { lead, campaign };
     });
@@ -957,27 +963,34 @@ export const addLeadToCampaignJob = inngest.createFunction(
     const firstName = nameParts[0];
     const lastName = nameParts.length > 1 ? nameParts.slice(1).join(' ') : '';
 
-    // Add to Instantly with all enriched data
-    await step.run('add-to-instantly', () =>
-      addLeadsToCampaign(data.campaign!.instantly_campaign_id, [{
-        email: data.lead!.email!.trim(),
-        first_name: firstName,
-        last_name: lastName,
-        company_name: '',
-        variables: {
-          lead_url: data.lead!.url || '',
-          title: data.lead!.title || '',
-          bio: data.lead!.bio || '',
-          audience_size: String(data.lead!.total_audience || ''),
-        },
-      }])
-    );
+    if (data.campaign?.status === 'draft' || !data.campaign?.instantly_campaign_id) {
+      await step.run('send-draft-and-add', () => sendDraftCampaignForLead({
+        campaignId,
+        leadId,
+      }));
+    } else {
+      // Add to Instantly with all enriched data
+      await step.run('add-to-instantly', () =>
+        addLeadsToCampaign(data.campaign!.instantly_campaign_id, [{
+          email: data.lead!.email!.trim(),
+          first_name: firstName,
+          last_name: lastName,
+          company_name: '',
+          variables: {
+            lead_url: data.lead!.url || '',
+            title: data.lead!.title || '',
+            bio: data.lead!.bio || '',
+            audience_size: String(data.lead!.total_audience || ''),
+          },
+        }])
+      );
 
-    // Mark as routed in DB
-    await step.run('mark-routed', async () => {
-      await markLeadRouted(leadId, campaignId);
-      await incrementCampaignLeadCount(campaignId);
-    });
+      // Mark as routed in DB
+      await step.run('mark-routed', async () => {
+        await markLeadRouted(leadId, campaignId);
+        await incrementCampaignLeadCount(campaignId);
+      });
+    }
 
     logger.info(`Lead ${leadId} added to campaign ${campaignId}`);
     return { leadId, campaignId };

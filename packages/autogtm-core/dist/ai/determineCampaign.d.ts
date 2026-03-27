@@ -1,8 +1,8 @@
 /**
- * AI agent that determines which Instantly campaign a lead should be routed to.
+ * AI agent that decides whether to create a per-lead campaign draft or skip.
  *
- * Given an enriched lead, available campaigns (with live stats), and company context,
- * the agent decides: add to existing campaign, create a new one, or skip.
+ * Given an enriched lead and company context, the agent decides:
+ * create a new campaign draft, or skip.
  */
 import type { Lead, CampaignWithStats, Company, CampaignRoutingDecision } from '../types';
 export interface DetermineCampaignParams {

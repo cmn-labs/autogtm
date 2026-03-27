@@ -1,7 +1,3 @@
-/**
- * Creates a new Instantly campaign for a given persona,
- * generates AI email copy, saves everything to DB, and activates it.
- */
 import type { Company, Campaign } from '../types';
 export interface CreateCampaignForPersonaParams {
     company: Pick<Company, 'id' | 'name' | 'description' | 'target_audience'> & {
@@ -11,5 +7,15 @@ export interface CreateCampaignForPersonaParams {
     };
     suggestedName: string;
     suggestedPersona: string;
+    leadId: string;
+    leadFullName?: string | null;
+    leadBio?: string | null;
+    leadCategory?: string | null;
 }
+export declare function createDraftCampaignForLead(params: CreateCampaignForPersonaParams): Promise<Campaign>;
+export declare function sendDraftCampaignForLead(params: {
+    campaignId: string;
+    leadId: string;
+    companySendingEmails?: string[] | null;
+}): Promise<Campaign>;
 export declare function createCampaignForPersona(params: CreateCampaignForPersonaParams): Promise<Campaign>;

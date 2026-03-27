@@ -328,7 +328,9 @@ export type EnrichedLeadData = z.infer<typeof EnrichedLeadDataSchema>;
 export declare const CampaignSchema: z.ZodObject<{
     id: z.ZodString;
     company_id: z.ZodString;
-    instantly_campaign_id: z.ZodString;
+    source_lead_id: z.ZodOptional<z.ZodNullable<z.ZodString>>;
+    draft_type: z.ZodDefault<z.ZodEnum<["lead"]>>;
+    instantly_campaign_id: z.ZodOptional<z.ZodNullable<z.ZodString>>;
     name: z.ZodString;
     status: z.ZodEnum<["draft", "active", "paused", "completed"]>;
     leads_count: z.ZodDefault<z.ZodNumber>;
@@ -348,6 +350,8 @@ export declare const CampaignSchema: z.ZodObject<{
     updated_at?: string;
     status?: "completed" | "draft" | "active" | "paused";
     company_id?: string;
+    source_lead_id?: string;
+    draft_type?: "lead";
     instantly_campaign_id?: string;
     leads_count?: number;
     emails_sent?: number;
@@ -364,6 +368,8 @@ export declare const CampaignSchema: z.ZodObject<{
     updated_at?: string;
     status?: "completed" | "draft" | "active" | "paused";
     company_id?: string;
+    source_lead_id?: string;
+    draft_type?: "lead";
     instantly_campaign_id?: string;
     leads_count?: number;
     emails_sent?: number;
@@ -380,10 +386,6 @@ export interface CampaignWithStats extends Campaign {
     reply_rate: number;
 }
 export type CampaignRoutingDecision = {
-    action: 'add_to_existing';
-    campaignId: string;
-    reason: string;
-} | {
     action: 'create_new';
     suggestedName: string;
     suggestedPersona: string;
@@ -400,9 +402,11 @@ export declare const CampaignEmailSchema: z.ZodObject<{
     body: z.ZodString;
     delay_days: z.ZodDefault<z.ZodNumber>;
     created_at: z.ZodString;
+    updated_at: z.ZodOptional<z.ZodString>;
 }, "strip", z.ZodTypeAny, {
     id?: string;
     created_at?: string;
+    updated_at?: string;
     campaign_id?: string;
     step?: number;
     subject?: string;
@@ -411,6 +415,7 @@ export declare const CampaignEmailSchema: z.ZodObject<{
 }, {
     id?: string;
     created_at?: string;
+    updated_at?: string;
     campaign_id?: string;
     step?: number;
     subject?: string;

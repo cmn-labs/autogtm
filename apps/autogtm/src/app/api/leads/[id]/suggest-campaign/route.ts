@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { determineCampaignForLead } from '@autogtm/core/ai/determineCampaign';
-import { getCampaignsWithStats, setSuggestedCampaign, markLeadSkipped } from '@autogtm/core/db/autogtmDbCalls';
-import { createCampaignForPersona } from '@autogtm/core/campaigns/createCampaignForPersona';
+import { setSuggestedCampaign, markLeadSkipped, getCampaignBySourceLeadId } from '@autogtm/core/db/autogtmDbCalls';
+import { createDraftCampaignForLead } from '@autogtm/core/campaigns/createCampaignForPersona';
 
 export async function POST(
   request: NextRequest,
@@ -53,8 +53,6 @@ export async function POST(
       return NextResponse.json({ error: 'Company not found' }, { status: 404 });
     }
 
-    // Run the agent
-    const campaigns = await getCampaignsWithStats(companyId);
     const decision = await determineCampaignForLead({
       lead: {
         email: lead.email,
@@ -68,9 +66,9 @@ export async function POST(
         promotion_fit_score: lead.promotion_fit_score,
         promotion_fit_reason: lead.promotion_fit_reason,
       },
-      campaigns,
+      campaigns: [],
       company: { name: company.name, description: company.description, target_audience: company.target_audience },
-      autoMode: false,
+      autoMode: true,
     });
 
     if (decision.action === 'skip') {
@@ -78,18 +76,22 @@ export async function POST(
       return NextResponse.json({ action: 'skipped', reason: decision.reason });
     }
 
-    let campaignId: string;
-
-    if (decision.action === 'create_new') {
-      const newCampaign = await createCampaignForPersona({
-        company: { id: companyId, name: company.name, description: company.description, target_audience: company.target_audience, sending_emails: company.sending_emails, default_sequence_length: company.default_sequence_length, email_prompt: company.email_prompt },
-        suggestedName: decision.suggestedName,
-        suggestedPersona: decision.suggestedPersona,
-      });
-      campaignId = newCampaign.id;
-    } else {
-      campaignId = decision.campaignId;
+    const existingDraft = await getCampaignBySourceLeadId(leadId);
+    if (existingDraft) {
+      await setSuggestedCampaign(leadId, existingDraft.id, decision.reason);
+      return NextResponse.json({ action: 'suggested', campaignId: existingDraft.id, reason: decision.reason });
     }
+
+    const newCampaign = await createDraftCampaignForLead({
+      company: { id: companyId, name: company.name, description: company.description, target_audience: company.target_audience, sending_emails: company.sending_emails, default_sequence_length: company.default_sequence_length, email_prompt: company.email_prompt },
+      suggestedName: decision.suggestedName,
+      suggestedPersona: decision.suggestedPersona,
+      leadId,
+      leadFullName: lead.full_name,
+      leadBio: lead.bio,
+      leadCategory: lead.category,
+    });
+    const campaignId = newCampaign.id;
 
     await setSuggestedCampaign(leadId, campaignId, decision.reason);
 

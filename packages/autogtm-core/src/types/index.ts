@@ -112,7 +112,9 @@ export type EnrichedLeadData = z.infer<typeof EnrichedLeadDataSchema>;
 export const CampaignSchema = z.object({
   id: z.string().uuid(),
   company_id: z.string().uuid(),
-  instantly_campaign_id: z.string(),
+  source_lead_id: z.string().uuid().nullable().optional(),
+  draft_type: z.enum(['lead']).default('lead'),
+  instantly_campaign_id: z.string().nullable().optional(),
   name: z.string(),
   status: z.enum(['draft', 'active', 'paused', 'completed']),
   leads_count: z.number().default(0),
@@ -136,7 +138,6 @@ export interface CampaignWithStats extends Campaign {
 
 // Agent routing decision
 export type CampaignRoutingDecision =
-  | { action: 'add_to_existing'; campaignId: string; reason: string }
   | { action: 'create_new'; suggestedName: string; suggestedPersona: string; reason: string }
   | { action: 'skip'; reason: string };
 
@@ -149,6 +150,7 @@ export const CampaignEmailSchema = z.object({
   body: z.string(),
   delay_days: z.number().default(0),
   created_at: z.string().datetime(),
+  updated_at: z.string().datetime().optional(),
 });
 export type CampaignEmail = z.infer<typeof CampaignEmailSchema>;
 

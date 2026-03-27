@@ -45,7 +45,7 @@ export async function POST(
       },
     });
 
-    return NextResponse.json({ success: true, message: 'Adding lead to campaign' });
+    return NextResponse.json({ success: true, message: 'Sending lead campaign' });
   } catch (error) {
     console.error('Error adding lead to campaign:', error);
     return NextResponse.json(

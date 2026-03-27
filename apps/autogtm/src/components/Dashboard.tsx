@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import Link from 'next/link';
 import { Button } from '@/components/ui/button';
 import { Header, useSelectedCompany } from '@/components/Header';
@@ -83,7 +83,8 @@ interface Campaign {
   id: string;
   name: string;
   status: string;
-  instantly_campaign_id: string;
+  instantly_campaign_id: string | null;
+  source_lead_id?: string | null;
   leads_count: number;
   emails_sent: number;
   opens: number;
@@ -160,8 +161,15 @@ export function Dashboard({ userEmail }: DashboardProps) {
   const [sendingAccountsOpen, setSendingAccountsOpen] = useState(false);
   const [expandedCampaign, setExpandedCampaign] = useState<string | null>(null);
   const [leadFilter, setLeadFilter] = useState<'all' | 'suggested' | 'routed' | 'pending' | 'skipped'>('all');
-  const [previewCampaign, setPreviewCampaign] = useState<{ campaign: Campaign; emails: CampaignEmail[] } | null>(null);
+  const [previewCampaign, setPreviewCampaign] = useState<{ campaign: Campaign; emails: CampaignEmail[]; leadId?: string } | null>(null);
   const [loadingCampaignPreview, setLoadingCampaignPreview] = useState(false);
+  const [savingCampaignPreview, setSavingCampaignPreview] = useState(false);
+  const [startingCampaignLeadId, setStartingCampaignLeadId] = useState<string | null>(null);
+  const [regeneratingCampaignPreview, setRegeneratingCampaignPreview] = useState(false);
+  const [undoAvailable, setUndoAvailable] = useState(false);
+  const [undoingCampaignPreview, setUndoingCampaignPreview] = useState(false);
+  const [showFullPreviewBio, setShowFullPreviewBio] = useState(false);
+  const regenerateFeedbackRef = useRef<HTMLTextAreaElement | null>(null);
   const [promptOpen, setPromptOpen] = useState(false);
   const [guideOpen, setGuideOpen] = useState(false);
   const [companyProfileOpen, setCompanyProfileOpen] = useState(false);
@@ -387,7 +395,7 @@ export function Dashboard({ userEmail }: DashboardProps) {
     try {
       const response = await fetch(`/api/leads/${leadId}/route-to-campaign`, { method: 'POST' });
       if (response.ok) {
-        toast({ title: 'Campaign routing started', description: 'Lead will be routed to a campaign shortly' });
+        toast({ title: 'Campaign send started', description: 'Draft will be sent and the lead will be added shortly' });
         setLeads(leads.map(l => l.id === leadId ? { ...l, campaign_status: 'pending' as const } : l));
         if (selectedLead?.id === leadId) {
           setSelectedLead({ ...selectedLead, campaign_status: 'pending' });
@@ -414,7 +422,7 @@ export function Dashboard({ userEmail }: DashboardProps) {
       const data = await response.json();
       if (response.ok) {
         if (data.action === 'suggested') {
-          toast({ title: 'Campaign suggested', description: 'Lead matched to a campaign. Click Add to confirm.' });
+          toast({ title: 'Campaign generated', description: 'Draft campaign is ready. Open it, edit if needed, then Create and Start Campaign.' });
           // Refresh to get updated data
           fetchData();
         } else if (data.action === 'skipped') {
@@ -435,19 +443,158 @@ export function Dashboard({ userEmail }: DashboardProps) {
     }
   };
 
-  const openCampaignPreview = async (campaignId: string) => {
+  const openCampaignPreview = async (campaignId: string, leadId?: string) => {
     const campaign = campaigns.find(c => c.id === campaignId);
     if (!campaign) return;
+    const resolvedLeadId = leadId || campaign.source_lead_id || undefined;
     setLoadingCampaignPreview(true);
-    setPreviewCampaign({ campaign, emails: [] });
+    if (regenerateFeedbackRef.current) {
+      regenerateFeedbackRef.current.value = '';
+    }
+    setShowFullPreviewBio(false);
+    setUndoAvailable(false);
+    setPreviewCampaign({ campaign, emails: [], leadId: resolvedLeadId });
     try {
-      const res = await fetch(`/api/campaigns/${campaignId}/emails`);
-      if (res.ok) {
-        const data = await res.json();
-        setPreviewCampaign({ campaign, emails: data.emails || [] });
+      const [emailsRes, versionsRes] = await Promise.all([
+        fetch(`/api/campaigns/${campaignId}/emails`),
+        fetch(`/api/campaigns/${campaignId}/emails/versions`),
+      ]);
+      if (emailsRes.ok) {
+        const data = await emailsRes.json();
+        setPreviewCampaign({ campaign, emails: data.emails || [], leadId: resolvedLeadId });
+      }
+      if (versionsRes.ok) {
+        const versionsData = await versionsRes.json();
+        setUndoAvailable(!!versionsData.undo_available);
       }
     } catch {} finally {
       setLoadingCampaignPreview(false);
+    }
+  };
+
+  const updatePreviewEmail = (index: number, field: keyof CampaignEmail, value: string | number) => {
+    if (!previewCampaign) return;
+    const nextEmails = previewCampaign.emails.map((email, i) => (
+      i === index ? { ...email, [field]: value } : email
+    ));
+    setPreviewCampaign({ ...previewCampaign, emails: nextEmails });
+  };
+
+  const savePreviewEmails = async (): Promise<boolean> => {
+    if (!previewCampaign) return false;
+    setSavingCampaignPreview(true);
+    try {
+      const res = await fetch(`/api/campaigns/${previewCampaign.campaign.id}/emails`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          emails: previewCampaign.emails.map((email) => ({
+            step: email.step,
+            subject: email.subject,
+            body: email.body,
+            delay_days: email.delay_days,
+          })),
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to save draft');
+      }
+      setPreviewCampaign({ campaign: previewCampaign.campaign, emails: data.emails || [], leadId: previewCampaign.leadId });
+      setUndoAvailable(!!data.undo_available);
+      toast({ title: 'Draft saved' });
+      return true;
+    } catch (error: any) {
+      toast({ variant: 'destructive', title: 'Error', description: error.message || 'Failed to save draft' });
+      return false;
+    } finally {
+      setSavingCampaignPreview(false);
+    }
+  };
+
+  const createAndStartCampaignFromPreview = async () => {
+    if (!previewCampaign?.leadId) return;
+    setStartingCampaignLeadId(previewCampaign.leadId);
+    try {
+      const saved = await savePreviewEmails();
+      if (!saved) return;
+      await routeLeadToCampaign(previewCampaign.leadId);
+      setPreviewCampaign(null);
+    } finally {
+      setStartingCampaignLeadId(null);
+    }
+  };
+
+  const regeneratePreviewEmails = async () => {
+    if (!previewCampaign?.leadId || !previewCampaign.campaign?.id) return;
+    const feedback = regenerateFeedbackRef.current?.value?.trim() || '';
+    if (!feedback) {
+      toast({ variant: 'destructive', title: 'Feedback required', description: 'Tell AI what to improve before regenerating.' });
+      return;
+    }
+
+    setRegeneratingCampaignPreview(true);
+    try {
+      const res = await fetch(`/api/campaigns/${previewCampaign.campaign.id}/regenerate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          leadId: previewCampaign.leadId,
+          feedback,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to regenerate');
+      }
+
+      const currentByStep = new Map(previewCampaign.emails.map((email) => [email.step, email]));
+      const regeneratedEmails = (data.emails || []).map((email: any) => {
+        const existing = currentByStep.get(email.step);
+        return {
+          id: existing?.id || `regen-${email.step}`,
+          step: email.step,
+          subject: email.subject,
+          body: email.body,
+          delay_days: email.delay_days,
+        };
+      });
+
+      setPreviewCampaign({
+        ...previewCampaign,
+        emails: regeneratedEmails,
+      });
+      toast({ title: 'Draft regenerated', description: 'Review the proposed copy and click Save Draft to persist.' });
+    } catch (error: any) {
+      toast({ variant: 'destructive', title: 'Error', description: error.message || 'Failed to regenerate draft' });
+    } finally {
+      setRegeneratingCampaignPreview(false);
+    }
+  };
+
+  const undoPreviewEmails = async () => {
+    if (!previewCampaign?.campaign?.id) return;
+
+    setUndoingCampaignPreview(true);
+    try {
+      const res = await fetch(`/api/campaigns/${previewCampaign.campaign.id}/emails/versions`, {
+        method: 'POST',
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to undo');
+      }
+
+      setPreviewCampaign({
+        ...previewCampaign,
+        emails: data.emails || [],
+      });
+      setUndoAvailable(!!data.undo_available);
+      toast({ title: 'Draft reverted', description: 'Restored the previous saved version.' });
+    } catch (error: any) {
+      toast({ variant: 'destructive', title: 'Error', description: error.message || 'Failed to undo draft changes' });
+    } finally {
+      setUndoingCampaignPreview(false);
     }
   };
 
@@ -516,6 +663,10 @@ export function Dashboard({ userEmail }: DashboardProps) {
   };
 
   const isCompanyComplete = company?.name && company?.website && company?.description && company?.target_audience;
+  const liveCampaigns = campaigns.filter((campaign) => campaign.instantly_campaign_id && campaign.status !== 'draft');
+  const previewLead = previewCampaign?.leadId
+    ? leads.find((lead) => lead.id === previewCampaign.leadId)
+    : null;
 
   const formatLastRun = (date: string | null) => {
     if (!date) return 'Never';
@@ -564,7 +715,7 @@ export function Dashboard({ userEmail }: DashboardProps) {
     { id: 'context' as Tab, label: 'Context', count: instructions.length, icon: FileText },
     { id: 'searches' as Tab, label: 'Searches', count: stats.queries, icon: Search },
     { id: 'leads' as Tab, label: 'Leads', count: stats.leads, icon: Users },
-    { id: 'campaigns' as Tab, label: 'Campaigns', count: stats.campaigns, icon: Send },
+    { id: 'campaigns' as Tab, label: 'Campaigns', count: liveCampaigns.length, icon: Send },
   ];
 
   return (
@@ -1092,12 +1243,12 @@ export function Dashboard({ userEmail }: DashboardProps) {
                                         <div className="flex items-center gap-2">
                                           {routedCampaign && (
                                             <button
-                                              onClick={() => openCampaignPreview(routedCampaign.id)}
+                                              onClick={() => openCampaignPreview(routedCampaign.id, lead.id)}
                                               className="inline-flex items-center gap-1 text-xs text-indigo-600 hover:text-indigo-800 font-medium truncate max-w-[180px] transition-colors"
-                                              title={routedCampaign.name}
+                                              title="View Campaign"
                                             >
                                               <Send className="h-3 w-3 shrink-0" />
-                                              {routedCampaign.name}
+                                              View Campaign
                                             </button>
                                           )}
                                           <span className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium bg-green-50 text-green-700">
@@ -1106,20 +1257,20 @@ export function Dashboard({ userEmail }: DashboardProps) {
                                           </span>
                                         </div>
                                       );
-                                    })() : lead.campaign_status === 'pending' ? (
+                                    })() : routingLeads.has(lead.id) ? (
                                       <span className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium bg-amber-50 text-amber-600">
                                         <Loader2 className="h-3 w-3 animate-spin" />
-                                        Routing
+                                        Starting...
                                       </span>
                                     ) : suggestedCampaign ? (
                                       <div className="flex items-center gap-3">
                                         <button
-                                          onClick={() => openCampaignPreview(suggestedCampaign.id)}
+                                          onClick={() => openCampaignPreview(suggestedCampaign.id, lead.id)}
                                           className="inline-flex items-center gap-1 text-xs text-indigo-600 hover:text-indigo-800 font-medium truncate max-w-[180px] transition-colors"
-                                          title={suggestedCampaign.name}
+                                          title="View Campaign"
                                         >
                                           <Send className="h-3 w-3 shrink-0" />
-                                          {suggestedCampaign.name}
+                                          View Campaign
                                         </button>
                                         <div className="flex items-center gap-1.5">
                                           <button
@@ -1136,14 +1287,10 @@ export function Dashboard({ userEmail }: DashboardProps) {
                                             <X className="h-3 w-3" />
                                             Skip
                                           </button>
-                                          <button
-                                            onClick={() => routeLeadToCampaign(lead.id)}
-                                            disabled={routingLeads.has(lead.id)}
-                                            className="inline-flex items-center gap-1 text-xs px-3 py-1.5 rounded-md bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-50 font-medium whitespace-nowrap transition-colors"
-                                          >
+                                          <span className="inline-flex items-center gap-1 text-xs px-3 py-1.5 rounded-md bg-indigo-50 text-indigo-700 font-medium whitespace-nowrap">
                                             <Check className="h-3 w-3" />
-                                            {routingLeads.has(lead.id) ? 'Adding...' : 'Add to Campaign'}
-                                          </button>
+                                            Review required
+                                          </span>
                                         </div>
                                       </div>
                                     ) : lead.campaign_status === 'skipped' ? (
@@ -1175,8 +1322,8 @@ export function Dashboard({ userEmail }: DashboardProps) {
                                         className="text-xs px-3 py-1.5 rounded-md border border-gray-200 text-gray-600 hover:bg-gray-50 disabled:opacity-50 font-medium"
                                       >
                                         {suggestingLeads.has(lead.id) ? (
-                                          <span className="flex items-center gap-1"><Loader2 className="h-3 w-3 animate-spin" /> Finding...</span>
-                                        ) : 'Find Campaign'}
+                                          <span className="flex items-center gap-1"><Loader2 className="h-3 w-3 animate-spin" /> Generating...</span>
+                                        ) : 'Generate Campaign'}
                                       </button>
                                     ) : isUnenriched ? (
                                       <button
@@ -1374,14 +1521,14 @@ export function Dashboard({ userEmail }: DashboardProps) {
                       )}
                     </div>
 
-                    {campaigns.length === 0 ? (
+                    {liveCampaigns.length === 0 ? (
                       <div className="py-12 text-center">
                         <Send className="h-10 w-10 mx-auto mb-4 text-gray-300" />
-                        <p className="text-gray-500">No campaigns yet. Campaigns are created from leads.</p>
+                        <p className="text-gray-500">No sent campaigns yet. Sent campaigns appear here after they are created in Instantly.</p>
                       </div>
                     ) : (
                       <div className="space-y-3">
-                        {campaigns.map((campaign) => {
+                        {liveCampaigns.map((campaign) => {
                           const isExpanded = expandedCampaign === campaign.id;
                           const matchedLeads = leads.filter((l: any) => l.campaign_id === campaign.id);
 
@@ -1433,16 +1580,23 @@ export function Dashboard({ userEmail }: DashboardProps) {
                                         Activate
                                       </Button>
                                     )}
-                                    <a
-                                      href={`https://app.instantly.ai/app/campaign/${campaign.instantly_campaign_id}/analytics`}
-                                      target="_blank"
-                                      rel="noopener noreferrer"
-                                    >
-                                      <Button size="sm" variant="outline">
+                                    {campaign.instantly_campaign_id ? (
+                                      <a
+                                        href={`https://app.instantly.ai/app/campaign/${campaign.instantly_campaign_id}/analytics`}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                      >
+                                        <Button size="sm" variant="outline">
+                                          <ExternalLink className="h-4 w-4 mr-1" />
+                                          Instantly
+                                        </Button>
+                                      </a>
+                                    ) : (
+                                      <Button size="sm" variant="outline" disabled>
                                         <ExternalLink className="h-4 w-4 mr-1" />
-                                        Instantly
+                                        Draft only
                                       </Button>
-                                    </a>
+                                    )}
                                   </div>
                                 </div>
 
@@ -1714,12 +1868,11 @@ export function Dashboard({ userEmail }: DashboardProps) {
               )}
               {selectedLead.suggested_campaign_id && selectedLead.campaign_status !== 'routed' && (
                 <Button
-                  onClick={() => routeLeadToCampaign(selectedLead.id)}
-                  disabled={routingLeads.has(selectedLead.id)}
+                  onClick={() => openCampaignPreview(selectedLead.suggested_campaign_id!, selectedLead.id)}
                   className="flex-1"
                 >
-                  <Send className={`h-4 w-4 mr-2 ${routingLeads.has(selectedLead.id) ? 'animate-spin' : ''}`} />
-                  {routingLeads.has(selectedLead.id) ? 'Adding...' : `Add to ${campaigns.find(c => c.id === selectedLead.suggested_campaign_id)?.name || 'Campaign'}`}
+                  <Send className="h-4 w-4 mr-2" />
+                  Review Suggested Campaign
                 </Button>
               )}
               {selectedLead.enrichment_status === 'enriched' && selectedLead.email && !selectedLead.suggested_campaign_id && selectedLead.campaign_status !== 'routed' && selectedLead.campaign_status !== 'skipped' && (
@@ -1729,9 +1882,9 @@ export function Dashboard({ userEmail }: DashboardProps) {
                   className="flex-1"
                 >
                   {suggestingLeads.has(selectedLead.id) ? (
-                    <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Finding Campaign...</>
+                    <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Generating Campaign...</>
                   ) : (
-                    <><Search className="h-4 w-4 mr-2" /> Find Campaign</>
+                    <><Search className="h-4 w-4 mr-2" /> Generate Campaign</>
                   )}
                 </Button>
               )}
@@ -1778,6 +1931,11 @@ export function Dashboard({ userEmail }: DashboardProps) {
                       {previewCampaign.campaign.persona}
                     </span>
                   )}
+                  {previewCampaign.campaign.status === 'draft' && !previewCampaign.campaign.instantly_campaign_id && (
+                    <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-amber-50 text-amber-700">
+                      Not in Instantly yet
+                    </span>
+                  )}
                 </div>
               </div>
               <button onClick={() => setPreviewCampaign(null)} className="text-gray-400 hover:text-gray-600">
@@ -1786,6 +1944,64 @@ export function Dashboard({ userEmail }: DashboardProps) {
             </div>
 
             <div className="p-4 space-y-4">
+              {previewLead && (
+                <div className="rounded-lg border border-indigo-200 bg-indigo-50/40 p-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <div>
+                      <p className="text-xs uppercase tracking-wide text-indigo-600 font-semibold">Lead Context</p>
+                      <p className="text-sm font-semibold text-gray-900 mt-0.5">{previewLead.full_name || previewLead.name || 'Unknown'}</p>
+                    </div>
+                    {previewLead.promotion_fit_score ? (
+                      <span className="text-xs px-2 py-1 rounded-md bg-white border border-indigo-200 text-indigo-700 font-medium">
+                        Fit {previewLead.promotion_fit_score}/10
+                      </span>
+                    ) : null}
+                  </div>
+                  <div className="mt-2 flex flex-wrap gap-2 text-xs text-gray-600">
+                    {previewLead.platform ? <span className="px-2 py-0.5 rounded-full bg-white border border-gray-200">{previewLead.platform}</span> : null}
+                    {previewLead.category ? <span className="px-2 py-0.5 rounded-full bg-white border border-gray-200">{previewLead.category}</span> : null}
+                    {previewLead.title ? <span className="px-2 py-0.5 rounded-full bg-white border border-gray-200">{previewLead.title}</span> : null}
+                  </div>
+                  {previewLead.bio ? (
+                    <div className="mt-2 text-sm text-gray-700 leading-relaxed">
+                      <p>{showFullPreviewBio ? previewLead.bio : `${previewLead.bio.slice(0, 220)}${previewLead.bio.length > 220 ? '...' : ''}`}</p>
+                      {previewLead.bio.length > 220 && (
+                        <button
+                          type="button"
+                          onClick={() => setShowFullPreviewBio((v) => !v)}
+                          className="mt-1 text-xs font-medium text-indigo-700 hover:text-indigo-900"
+                        >
+                          {showFullPreviewBio ? 'Show less' : 'Show more'}
+                        </button>
+                      )}
+                    </div>
+                  ) : null}
+                </div>
+              )}
+
+              {previewCampaign.campaign.status === 'draft' && previewCampaign.leadId && (
+                <div className="rounded-lg border border-gray-200 p-3 space-y-2">
+                  <label className="text-xs font-semibold text-gray-700 uppercase tracking-wide">Regenerate With Feedback</label>
+                  <textarea
+                    ref={regenerateFeedbackRef}
+                    placeholder="Example: make it shorter, stronger hook from their bio, less generic CTA."
+                    className="w-full min-h-[84px] rounded-md border border-gray-200 px-3 py-2 text-sm"
+                  />
+                  <Button
+                    variant="outline"
+                    onClick={regeneratePreviewEmails}
+                    disabled={regeneratingCampaignPreview}
+                    className="w-full"
+                  >
+                    {regeneratingCampaignPreview ? (
+                      <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Regenerating...</>
+                    ) : (
+                      <>Regenerate Draft</>
+                    )}
+                  </Button>
+                  <p className="text-xs text-gray-500">Regenerate updates this modal first. Click Save Draft to keep changes.</p>
+                </div>
+              )}
               {loadingCampaignPreview ? (
                 <div className="py-8 text-center">
                   <Loader2 className="h-6 w-6 mx-auto animate-spin text-gray-400" />
@@ -1804,12 +2020,47 @@ export function Dashboard({ userEmail }: DashboardProps) {
                       )}
                     </div>
                     <div className="p-4">
-                      {email.subject && (
-                        <p className="text-sm font-medium text-gray-900 mb-2">
-                          Subject: {email.subject}
-                        </p>
+                      {previewCampaign.campaign.status === 'draft' ? (
+                        <div className="space-y-3">
+                          <div>
+                            <label className="text-xs font-medium text-gray-600">Subject</label>
+                            <input
+                              value={email.subject}
+                              onChange={(e) => updatePreviewEmail(i, 'subject', e.target.value)}
+                              className="mt-1 w-full rounded-md border border-gray-200 px-3 py-2 text-sm"
+                            />
+                          </div>
+                          <div>
+                            <label className="text-xs font-medium text-gray-600">Body</label>
+                            <textarea
+                              value={email.body}
+                              onChange={(e) => updatePreviewEmail(i, 'body', e.target.value)}
+                              className="mt-1 w-full min-h-[140px] rounded-md border border-gray-200 px-3 py-2 text-sm"
+                            />
+                          </div>
+                          {i > 0 && (
+                            <div>
+                              <label className="text-xs font-medium text-gray-600">Delay (days)</label>
+                              <input
+                                type="number"
+                                min={0}
+                                value={email.delay_days}
+                                onChange={(e) => updatePreviewEmail(i, 'delay_days', Math.max(0, Number(e.target.value || 0)))}
+                                className="mt-1 w-28 rounded-md border border-gray-200 px-3 py-2 text-sm"
+                              />
+                            </div>
+                          )}
+                        </div>
+                      ) : (
+                        <>
+                          {email.subject && (
+                            <p className="text-sm font-medium text-gray-900 mb-2">
+                              Subject: {email.subject}
+                            </p>
+                          )}
+                          <p className="text-sm text-gray-700 whitespace-pre-wrap leading-relaxed">{email.body}</p>
+                        </>
                       )}
-                      <p className="text-sm text-gray-700 whitespace-pre-wrap leading-relaxed">{email.body}</p>
                     </div>
                   </div>
                 ))
@@ -1817,17 +2068,60 @@ export function Dashboard({ userEmail }: DashboardProps) {
             </div>
 
             <div className="p-4 border-t flex gap-2">
-              <a
-                href={`https://app.instantly.ai/app/campaign/${previewCampaign.campaign.instantly_campaign_id}/analytics`}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="flex-1"
-              >
-                <Button variant="outline" className="w-full">
-                  <ExternalLink className="h-4 w-4 mr-2" />
-                  Open in Instantly
+              {previewCampaign.campaign.status === 'draft' && (
+                <Button className="flex-1" onClick={savePreviewEmails} disabled={savingCampaignPreview}>
+                  {savingCampaignPreview ? (
+                    <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Saving...</>
+                  ) : (
+                    <>Save Draft</>
+                  )}
                 </Button>
-              </a>
+              )}
+              {previewCampaign.campaign.status === 'draft' && (
+                <Button
+                  variant="outline"
+                  className="flex-1"
+                  onClick={undoPreviewEmails}
+                  disabled={!undoAvailable || undoingCampaignPreview}
+                >
+                  {undoingCampaignPreview ? (
+                    <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Undoing...</>
+                  ) : (
+                    <>Undo Last Save</>
+                  )}
+                </Button>
+              )}
+              {previewCampaign.campaign.status === 'draft' && previewCampaign.leadId && (
+                <Button
+                  className="flex-1"
+                  onClick={createAndStartCampaignFromPreview}
+                  disabled={savingCampaignPreview || startingCampaignLeadId === previewCampaign.leadId || routingLeads.has(previewCampaign.leadId)}
+                >
+                  {(startingCampaignLeadId === previewCampaign.leadId || routingLeads.has(previewCampaign.leadId)) ? (
+                    <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Creating & Starting...</>
+                  ) : (
+                    <>Create and Start Campaign</>
+                  )}
+                </Button>
+              )}
+              {previewCampaign.campaign.instantly_campaign_id ? (
+                <a
+                  href={`https://app.instantly.ai/app/campaign/${previewCampaign.campaign.instantly_campaign_id}/analytics`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex-1"
+                >
+                  <Button variant="outline" className="w-full">
+                    <ExternalLink className="h-4 w-4 mr-2" />
+                    Open in Instantly
+                  </Button>
+                </a>
+              ) : (
+                <Button variant="outline" className="flex-1" disabled>
+                  <ExternalLink className="h-4 w-4 mr-2" />
+                  Not sent yet
+                </Button>
+              )}
             </div>
           </div>
         </div>
@@ -1878,8 +2172,8 @@ export function Dashboard({ userEmail }: DashboardProps) {
                 <div className="flex gap-3 p-3 rounded-md bg-white/70">
                   <div className="shrink-0 w-6 h-6 rounded-full bg-indigo-100 text-indigo-700 flex items-center justify-center text-xs font-bold">4</div>
                   <div>
-                    <p className="font-medium text-gray-900 text-sm">Auto-create campaigns</p>
-                    <p className="text-xs text-gray-500 mt-0.5">An AI agent picks the best Instantly campaign for each lead, or creates a new one with a tailored email sequence.</p>
+                    <p className="font-medium text-gray-900 text-sm">Auto-generate draft campaigns</p>
+                    <p className="text-xs text-gray-500 mt-0.5">An AI agent generates a unique draft sequence for each qualified lead. Nothing is created in Instantly until send.</p>
                   </div>
                 </div>
               </div>
@@ -1892,7 +2186,7 @@ export function Dashboard({ userEmail }: DashboardProps) {
                     <p className="font-medium text-gray-900 text-sm">You approve and send</p>
                     <span className="text-[10px] uppercase tracking-wider font-semibold text-gray-400 bg-gray-100 px-1.5 py-0.5 rounded">You</span>
                   </div>
-                  <p className="text-xs text-gray-500 mt-0.5">Preview email sequences, then click "Add to Campaign" to confirm. Leads go into Instantly and emails send on your schedule. You stay in control.</p>
+                  <p className="text-xs text-gray-500 mt-0.5">Preview and edit draft sequences, then click "Create and Start Campaign". Only then do we create it in Instantly and add the lead.</p>
                 </div>
               </div>
 
@@ -1912,7 +2206,7 @@ export function Dashboard({ userEmail }: DashboardProps) {
                   <Zap className="shrink-0 h-5 w-5 text-amber-600 mt-0.5" />
                   <div>
                     <p className="font-medium text-gray-900 text-sm">Autopilot ON / OFF</p>
-                    <p className="text-xs text-gray-500 mt-0.5">When ON, high-fit leads (score 7+) are automatically added to campaigns. When OFF, you review and click "Add to Campaign" manually.</p>
+                    <p className="text-xs text-gray-500 mt-0.5">When ON, high-fit leads (score 7+) are auto-sent: draft is created in Instantly and the lead is added. When OFF, you review and click "Create and Start Campaign" manually.</p>
                   </div>
                 </div>
               </div>

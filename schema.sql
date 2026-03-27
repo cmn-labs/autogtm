@@ -70,7 +70,9 @@ create table webset_runs (
 create table campaigns (
   id uuid primary key default uuid_generate_v4(),
   company_id uuid not null references companies(id) on delete cascade,
-  instantly_campaign_id text not null,
+  source_lead_id uuid,
+  draft_type text not null default 'lead' check (draft_type in ('lead')),
+  instantly_campaign_id text,
   name text not null,
   status text not null default 'draft' check (status in ('draft', 'active', 'paused', 'completed')),
   persona text,
@@ -95,8 +97,24 @@ create table campaign_emails (
   subject text not null,
   body text not null,
   delay_days integer not null default 0,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+create unique index campaigns_source_lead_unique on campaigns(source_lead_id) where source_lead_id is not null;
+create unique index campaign_emails_campaign_step_unique on campaign_emails(campaign_id, step);
+
+create table campaign_email_versions (
+  id uuid primary key default uuid_generate_v4(),
+  campaign_id uuid not null references campaigns(id) on delete cascade,
+  version_number integer not null,
+  step integer not null default 0,
+  subject text not null,
+  body text not null,
+  delay_days integer not null default 0,
   created_at timestamptz not null default now()
 );
+create unique index campaign_email_versions_unique_step on campaign_email_versions(campaign_id, version_number, step);
+create index campaign_email_versions_campaign_version_idx on campaign_email_versions(campaign_id, version_number desc);
 
 -- ============================================================
 -- Leads
@@ -136,6 +154,8 @@ create table leads (
 
 -- Prevent duplicate leads by URL
 create unique index leads_url_unique on leads(url);
+alter table campaigns add constraint campaigns_source_lead_fkey
+  foreign key (source_lead_id) references leads(id) on delete set null;
 
 -- ============================================================
 -- Daily Digests

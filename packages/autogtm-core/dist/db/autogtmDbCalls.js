@@ -285,6 +285,9 @@ export async function getActiveCampaignsForCompany(companyId) {
 export async function getCampaignsWithStats(companyId) {
     const campaigns = await getActiveCampaignsForCompany(companyId);
     return Promise.all(campaigns.map(async (c) => {
+        if (!c.instantly_campaign_id) {
+            return { ...c, open_rate: 0, reply_rate: 0 };
+        }
         try {
             const analytics = await getCampaignAnalytics(c.instantly_campaign_id);
             return {
@@ -366,6 +369,58 @@ export async function getCampaignEmails(campaignId) {
         .from('campaign_emails')
         .select()
         .eq('campaign_id', campaignId)
+        .order('step', { ascending: true });
+    if (error)
+        throw error;
+    return data || [];
+}
+export async function updateCampaign(id, updates) {
+    const supabase = getSupabaseClient();
+    const { data, error } = await supabase
+        .from('campaigns')
+        .update({ ...updates, updated_at: new Date().toISOString() })
+        .eq('id', id)
+        .select()
+        .single();
+    if (error)
+        throw error;
+    return data;
+}
+export async function getCampaignBySourceLeadId(leadId) {
+    const supabase = getSupabaseClient();
+    const { data, error } = await supabase
+        .from('campaigns')
+        .select()
+        .eq('source_lead_id', leadId)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+    if (error)
+        throw error;
+    return data;
+}
+export async function replaceCampaignEmails(campaignId, emails) {
+    const supabase = getSupabaseClient();
+    const { error: deleteError } = await supabase
+        .from('campaign_emails')
+        .delete()
+        .eq('campaign_id', campaignId);
+    if (deleteError)
+        throw deleteError;
+    if (emails.length === 0) {
+        return [];
+    }
+    const insertRows = emails.map((email) => ({
+        campaign_id: campaignId,
+        step: email.step,
+        subject: email.subject,
+        body: email.body,
+        delay_days: email.delay_days,
+    }));
+    const { data, error } = await supabase
+        .from('campaign_emails')
+        .insert(insertRows)
+        .select()
         .order('step', { ascending: true });
     if (error)
         throw error;

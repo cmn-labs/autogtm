@@ -39,6 +39,9 @@ export declare function setSuggestedCampaign(leadId: string, campaignId: string,
 export declare function markLeadSkipped(leadId: string, reason: string): Promise<void>;
 export declare function createCampaignEmails(emails: Omit<CampaignEmail, 'id' | 'created_at'>[]): Promise<CampaignEmail[]>;
 export declare function getCampaignEmails(campaignId: string): Promise<CampaignEmail[]>;
+export declare function updateCampaign(id: string, updates: Partial<Pick<Campaign, 'name' | 'persona' | 'status' | 'instantly_campaign_id' | 'updated_at'>>): Promise<Campaign>;
+export declare function getCampaignBySourceLeadId(leadId: string): Promise<Campaign | null>;
+export declare function replaceCampaignEmails(campaignId: string, emails: Array<Pick<CampaignEmail, 'step' | 'subject' | 'body' | 'delay_days'>>): Promise<CampaignEmail[]>;
 export declare function createDailyDigest(digest: Omit<DailyDigest, 'id'>): Promise<DailyDigest>;
 export declare function getDigestsForCompany(companyId: string, limit?: number): Promise<DailyDigest[]>;
 export declare function isUserAllowed(email: string): Promise<boolean>;

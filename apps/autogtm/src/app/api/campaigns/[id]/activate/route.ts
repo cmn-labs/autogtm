@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { activateCampaign } from '@autogtm/core/clients/instantly';
+import { sendDraftCampaignForLead } from '@autogtm/core/campaigns/createCampaignForPersona';
 
 export async function POST(
   request: NextRequest,
@@ -16,12 +17,24 @@ export async function POST(
 
     const { data: campaign, error } = await supabase
       .from('campaigns')
-      .select('instantly_campaign_id, status')
+      .select('id, source_lead_id, instantly_campaign_id, status')
       .eq('id', id)
       .single();
 
     if (error || !campaign) {
       return NextResponse.json({ error: 'Campaign not found' }, { status: 404 });
+    }
+
+    if (!campaign.instantly_campaign_id) {
+      if (!campaign.source_lead_id) {
+        return NextResponse.json({ error: 'Draft campaign has no source lead' }, { status: 400 });
+      }
+
+      await sendDraftCampaignForLead({
+        campaignId: campaign.id,
+        leadId: campaign.source_lead_id,
+      });
+      return NextResponse.json({ success: true });
     }
 
     await activateCampaign(campaign.instantly_campaign_id);
