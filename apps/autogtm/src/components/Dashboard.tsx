@@ -1676,7 +1676,7 @@ export function Dashboard({ userEmail }: DashboardProps) {
       {/* Lead Detail Modal */}
       {selectedLead && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50" onClick={() => setSelectedLead(null)}>
-          <div className="bg-white rounded-xl max-w-2xl w-full max-h-[85vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+          <div className="bg-white rounded-xl max-w-2xl w-full max-h-[85vh] overflow-hidden flex flex-col" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between p-4 border-b">
               <div className="flex items-center gap-3">
                 <h3 className="font-semibold text-lg">{selectedLead.full_name || selectedLead.name || 'Lead Details'}</h3>
@@ -1699,30 +1699,31 @@ export function Dashboard({ userEmail }: DashboardProps) {
               </button>
             </div>
 
-            {/* Fit Score Banner */}
-            {selectedLead.promotion_fit_score && (
-              <div className={`px-4 py-3 ${
-                selectedLead.promotion_fit_score >= 7 ? 'bg-green-50 border-b border-green-100' :
-                selectedLead.promotion_fit_score >= 4 ? 'bg-yellow-50 border-b border-yellow-100' :
-                'bg-red-50 border-b border-red-100'
-              }`}>
-                <div className="flex items-center justify-between">
-                  <div>
-                    <p className="text-sm font-medium text-gray-700">Promotion Fit Score</p>
-                    <p className="text-xs text-gray-500 mt-0.5">{selectedLead.promotion_fit_reason}</p>
+            <div className="flex-1 overflow-y-auto">
+              {/* Fit Score Banner */}
+              {selectedLead.promotion_fit_score && (
+                <div className={`px-4 py-3 ${
+                  selectedLead.promotion_fit_score >= 7 ? 'bg-green-50 border-b border-green-100' :
+                  selectedLead.promotion_fit_score >= 4 ? 'bg-yellow-50 border-b border-yellow-100' :
+                  'bg-red-50 border-b border-red-100'
+                }`}>
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="text-sm font-medium text-gray-700">Promotion Fit Score</p>
+                      <p className="text-xs text-gray-500 mt-0.5">{selectedLead.promotion_fit_reason}</p>
+                    </div>
+                    <span className={`text-2xl font-bold ${
+                      selectedLead.promotion_fit_score >= 7 ? 'text-green-600' :
+                      selectedLead.promotion_fit_score >= 4 ? 'text-yellow-600' :
+                      'text-red-600'
+                    }`}>
+                      {selectedLead.promotion_fit_score}/10
+                    </span>
                   </div>
-                  <span className={`text-2xl font-bold ${
-                    selectedLead.promotion_fit_score >= 7 ? 'text-green-600' :
-                    selectedLead.promotion_fit_score >= 4 ? 'text-yellow-600' :
-                    'text-red-600'
-                  }`}>
-                    {selectedLead.promotion_fit_score}/10
-                  </span>
                 </div>
-              </div>
-            )}
+              )}
 
-            <div className="p-4 space-y-4">
+              <div className="p-4 space-y-4">
               {/* Title and Bio */}
               {selectedLead.title && (
                 <div>
@@ -1852,9 +1853,10 @@ export function Dashboard({ userEmail }: DashboardProps) {
                   {selectedLead.url}
                 </a>
               </div>
+              </div>
             </div>
 
-            <div className="p-4 border-t flex gap-2">
+            <div className="p-4 border-t flex gap-2 shrink-0 bg-white">
               {(selectedLead.enrichment_status === 'pending' || selectedLead.enrichment_status === 'failed') && (
                 <Button
                   onClick={() => enrichLead(selectedLead.id)}
