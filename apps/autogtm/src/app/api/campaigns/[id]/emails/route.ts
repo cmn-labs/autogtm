@@ -4,7 +4,7 @@ import { z } from 'zod';
 
 const CampaignStepInputSchema = z.object({
   step: z.number().int().min(0).max(2),
-  subject: z.string().min(1),
+  subject: z.string(),
   body: z.string().min(1),
   delay_days: z.number().int().min(0),
 });

@@ -28,6 +28,8 @@ import {
   HelpCircle,
   Zap,
   Power,
+  RotateCcw,
+  Save,
 } from 'lucide-react';
 
 interface DashboardProps {
@@ -168,7 +170,9 @@ export function Dashboard({ userEmail }: DashboardProps) {
   const [regeneratingCampaignPreview, setRegeneratingCampaignPreview] = useState(false);
   const [undoAvailable, setUndoAvailable] = useState(false);
   const [undoingCampaignPreview, setUndoingCampaignPreview] = useState(false);
-  const [showFullPreviewBio, setShowFullPreviewBio] = useState(false);
+  const [showLeadBio, setShowLeadBio] = useState(false);
+  const [showLeadSocial, setShowLeadSocial] = useState(false);
+  const [showLeadSource, setShowLeadSource] = useState(false);
   const regenerateFeedbackRef = useRef<HTMLTextAreaElement | null>(null);
   const [promptOpen, setPromptOpen] = useState(false);
   const [guideOpen, setGuideOpen] = useState(false);
@@ -184,6 +188,26 @@ export function Dashboard({ userEmail }: DashboardProps) {
       setLoading(false);
     }
   }, [companyId]);
+
+  useEffect(() => {
+    if (!selectedLead) return;
+
+    setShowLeadBio(false);
+    setShowLeadSocial(false);
+    setShowLeadSource(false);
+
+    const campaignId = selectedLead.campaign_status === 'routed'
+      ? selectedLead.campaign_id
+      : selectedLead.suggested_campaign_id;
+    if (!campaignId) return;
+
+    const alreadyOpen = previewCampaign
+      && previewCampaign.campaign.id === campaignId
+      && previewCampaign.leadId === selectedLead.id;
+    if (!alreadyOpen) {
+      void openCampaignPreview(campaignId, selectedLead.id);
+    }
+  }, [selectedLead?.id, selectedLead?.suggested_campaign_id, selectedLead?.campaign_id, selectedLead?.campaign_status]);
 
   // Poll for leads in transitional states (enriching, routing)
   useEffect(() => {
@@ -447,11 +471,18 @@ export function Dashboard({ userEmail }: DashboardProps) {
     const campaign = campaigns.find(c => c.id === campaignId);
     if (!campaign) return;
     const resolvedLeadId = leadId || campaign.source_lead_id || undefined;
+    if (
+      previewCampaign
+      && previewCampaign.campaign.id === campaignId
+      && previewCampaign.leadId === resolvedLeadId
+      && !loadingCampaignPreview
+    ) {
+      return;
+    }
     setLoadingCampaignPreview(true);
     if (regenerateFeedbackRef.current) {
       regenerateFeedbackRef.current.value = '';
     }
-    setShowFullPreviewBio(false);
     setUndoAvailable(false);
     setPreviewCampaign({ campaign, emails: [], leadId: resolvedLeadId });
     try {
@@ -664,9 +695,6 @@ export function Dashboard({ userEmail }: DashboardProps) {
 
   const isCompanyComplete = company?.name && company?.website && company?.description && company?.target_audience;
   const liveCampaigns = campaigns.filter((campaign) => campaign.instantly_campaign_id && campaign.status !== 'draft');
-  const previewLead = previewCampaign?.leadId
-    ? leads.find((lead) => lead.id === previewCampaign.leadId)
-    : null;
 
   const formatLastRun = (date: string | null) => {
     if (!date) return 'Never';
@@ -1241,16 +1269,6 @@ export function Dashboard({ userEmail }: DashboardProps) {
                                       const routedCampaign = lead.campaign_id ? campaigns.find(c => c.id === lead.campaign_id) : null;
                                       return (
                                         <div className="flex items-center gap-2">
-                                          {routedCampaign && (
-                                            <button
-                                              onClick={() => openCampaignPreview(routedCampaign.id, lead.id)}
-                                              className="inline-flex items-center gap-1 text-xs text-indigo-600 hover:text-indigo-800 font-medium truncate max-w-[180px] transition-colors"
-                                              title="View Campaign"
-                                            >
-                                              <Send className="h-3 w-3 shrink-0" />
-                                              View Campaign
-                                            </button>
-                                          )}
                                           <span className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium bg-green-50 text-green-700">
                                             <CheckCircle2 className="h-3 w-3" />
                                             Added
@@ -1263,35 +1281,28 @@ export function Dashboard({ userEmail }: DashboardProps) {
                                         Starting...
                                       </span>
                                     ) : suggestedCampaign ? (
-                                      <div className="flex items-center gap-3">
+                                      <div className="flex items-center gap-1.5">
                                         <button
-                                          onClick={() => openCampaignPreview(suggestedCampaign.id, lead.id)}
-                                          className="inline-flex items-center gap-1 text-xs text-indigo-600 hover:text-indigo-800 font-medium truncate max-w-[180px] transition-colors"
-                                          title="View Campaign"
+                                          onClick={() => setSelectedLead(lead)}
+                                          className="inline-flex items-center gap-1 text-xs px-3 py-1.5 rounded-md bg-indigo-50 text-indigo-700 hover:bg-indigo-100 font-medium whitespace-nowrap transition-colors"
                                         >
-                                          <Send className="h-3 w-3 shrink-0" />
-                                          View Campaign
+                                          <Check className="h-3 w-3" />
+                                          Ready to Review
                                         </button>
-                                        <div className="flex items-center gap-1.5">
-                                          <button
-                                            onClick={async () => {
-                                              try {
-                                                const res = await fetch(`/api/leads/${lead.id}/skip`, { method: 'POST' });
-                                                if (res.ok) {
-                                                  setLeads(leads.map(l => l.id === lead.id ? { ...l, campaign_status: 'skipped' as const, suggested_campaign_id: null, skip_reason: 'Manually skipped' } : l));
-                                                }
-                                              } catch {}
-                                            }}
-                                            className="inline-flex items-center gap-1 text-xs px-2.5 py-1.5 rounded-md text-gray-500 hover:text-gray-900 hover:bg-gray-100 font-medium whitespace-nowrap transition-colors"
-                                          >
-                                            <X className="h-3 w-3" />
-                                            Skip
-                                          </button>
-                                          <span className="inline-flex items-center gap-1 text-xs px-3 py-1.5 rounded-md bg-indigo-50 text-indigo-700 font-medium whitespace-nowrap">
-                                            <Check className="h-3 w-3" />
-                                            Review required
-                                          </span>
-                                        </div>
+                                        <button
+                                          onClick={async () => {
+                                            try {
+                                              const res = await fetch(`/api/leads/${lead.id}/skip`, { method: 'POST' });
+                                              if (res.ok) {
+                                                setLeads(leads.map(l => l.id === lead.id ? { ...l, campaign_status: 'skipped' as const, suggested_campaign_id: null, skip_reason: 'Manually skipped' } : l));
+                                              }
+                                            } catch {}
+                                          }}
+                                          className="inline-flex items-center gap-1 text-xs px-2.5 py-1.5 rounded-md text-gray-500 hover:text-gray-900 hover:bg-gray-100 font-medium whitespace-nowrap transition-colors"
+                                        >
+                                          <X className="h-3 w-3" />
+                                          Skip
+                                        </button>
                                       </div>
                                     ) : lead.campaign_status === 'skipped' ? (
                                       <div className="flex items-center gap-1.5">
@@ -1556,7 +1567,7 @@ export function Dashboard({ userEmail }: DashboardProps) {
                                         </span>
                                       )}
                                     </div>
-                                    <p className="font-medium text-gray-900 truncate cursor-pointer hover:text-purple-700 transition-colors" onClick={() => openCampaignPreview(campaign.id)}>{campaign.name}</p>
+                                    <p className="font-medium text-gray-900 truncate">{campaign.name}</p>
                                     <p className="text-xs text-gray-500">{new Date(campaign.created_at).toLocaleDateString()}</p>
                                   </div>
                                   <div className="flex items-center gap-2 shrink-0">
@@ -1676,7 +1687,7 @@ export function Dashboard({ userEmail }: DashboardProps) {
       {/* Lead Detail Modal */}
       {selectedLead && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50" onClick={() => setSelectedLead(null)}>
-          <div className="bg-white rounded-xl max-w-2xl w-full max-h-[85vh] overflow-hidden flex flex-col" onClick={(e) => e.stopPropagation()}>
+          <div className="bg-white rounded-xl max-w-6xl w-full max-h-[90vh] overflow-hidden flex flex-col" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between p-4 border-b">
               <div className="flex items-center gap-3">
                 <h3 className="font-semibold text-lg">{selectedLead.full_name || selectedLead.name || 'Lead Details'}</h3>
@@ -1694,12 +1705,27 @@ export function Dashboard({ userEmail }: DashboardProps) {
                   {selectedLead.enrichment_status}
                 </span>
               </div>
-              <button onClick={() => setSelectedLead(null)} className="text-gray-400 hover:text-gray-600">
-                <X className="h-5 w-5" />
-              </button>
+              <div className="flex items-center gap-2">
+                {previewCampaign?.leadId === selectedLead.id && previewCampaign.campaign.instantly_campaign_id && (
+                  <a
+                    href={`https://app.instantly.ai/app/campaign/${previewCampaign.campaign.instantly_campaign_id}/analytics`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    <Button variant="outline" size="sm">
+                      <ExternalLink className="h-4 w-4 mr-2" />
+                      Instantly
+                    </Button>
+                  </a>
+                )}
+                <button onClick={() => setSelectedLead(null)} className="text-gray-400 hover:text-gray-600">
+                  <X className="h-5 w-5" />
+                </button>
+              </div>
             </div>
 
-            <div className="flex-1 overflow-y-auto">
+            <div className="flex-1 overflow-hidden md:grid md:grid-cols-12">
+              <div className="md:col-span-5 overflow-y-auto">
               {/* Fit Score Banner */}
               {selectedLead.promotion_fit_score && (
                 <div className={`px-4 py-3 ${
@@ -1854,9 +1880,109 @@ export function Dashboard({ userEmail }: DashboardProps) {
                 </a>
               </div>
               </div>
+              </div>
+              <div className="hidden md:flex md:col-span-7 border-l border-gray-100 flex-col overflow-hidden">
+                <div className="p-4 border-b">
+                  <p className="text-sm font-semibold text-gray-900">Campaign Workspace</p>
+                  <p className="text-xs text-gray-500 mt-1">Review, edit, regenerate, and start from one place.</p>
+                </div>
+                {!previewCampaign || previewCampaign.leadId !== selectedLead.id ? (
+                  <div className="flex-1 flex items-center justify-center p-6">
+                    <div className="text-center max-w-sm">
+                      <Send className="h-8 w-8 mx-auto mb-2 text-gray-300" />
+                      <p className="text-sm text-gray-500 mb-3">Open this lead's suggested campaign draft.</p>
+                      {selectedLead.suggested_campaign_id ? (
+                        <Button onClick={() => openCampaignPreview(selectedLead.suggested_campaign_id!, selectedLead.id)}>
+                          <Send className="h-4 w-4 mr-2" />
+                          Open Suggested Draft
+                        </Button>
+                      ) : (
+                        <p className="text-xs text-gray-400">No suggested campaign yet.</p>
+                      )}
+                    </div>
+                  </div>
+                ) : (
+                  <>
+                    <div className="flex-1 overflow-y-auto p-4 space-y-4">
+                      {previewCampaign.emails.map((email, i) => (
+                        <div key={email.id} className="rounded-lg border border-gray-200">
+                          <div className="px-4 py-2 bg-gray-50 border-b flex items-center justify-between">
+                            <span className="text-xs font-semibold text-gray-600 uppercase tracking-wide">
+                              {i === 0 ? 'Initial Email' : `Follow-up ${i}`}
+                            </span>
+                            {email.delay_days > 0 && (
+                              <span className="text-xs text-gray-400">+{email.delay_days} days</span>
+                            )}
+                          </div>
+                          <div className="p-4 space-y-3">
+                            {selectedLead.campaign_status === 'routed' ? (
+                              <>
+                                {email.subject && (
+                                  <p className="text-sm font-medium text-gray-900">Subject: {email.subject}</p>
+                                )}
+                                <p className="text-sm text-gray-700 whitespace-pre-wrap leading-relaxed">{email.body}</p>
+                              </>
+                            ) : (
+                              <>
+                                <input
+                                  value={email.subject}
+                                  onChange={(e) => updatePreviewEmail(i, 'subject', e.target.value)}
+                                  className="w-full rounded-md border border-gray-200 px-3 py-2 text-sm"
+                                  placeholder="Subject"
+                                />
+                                <textarea
+                                  value={email.body}
+                                  onChange={(e) => updatePreviewEmail(i, 'body', e.target.value)}
+                                  className="w-full min-h-[120px] rounded-md border border-gray-200 px-3 py-2 text-sm"
+                                />
+                              </>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                      {selectedLead.campaign_status !== 'routed' && (
+                        <div className="rounded-lg border border-gray-200 p-3 space-y-2">
+                          <label className="text-xs font-semibold text-gray-700 uppercase tracking-wide">Regenerate With Feedback</label>
+                          <textarea
+                            ref={regenerateFeedbackRef}
+                            placeholder="Example: make it shorter, stronger hook from their bio, less generic CTA."
+                            className="w-full min-h-[84px] rounded-md border border-gray-200 px-3 py-2 text-sm"
+                          />
+                          <Button variant="outline" onClick={regeneratePreviewEmails} disabled={regeneratingCampaignPreview} className="w-full">
+                            {regeneratingCampaignPreview ? (
+                              <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Regenerating...</>
+                            ) : (
+                              <><Sparkles className="h-4 w-4 mr-2" /> Regenerate Draft</>
+                            )}
+                          </Button>
+                          <p className="text-xs text-gray-500">Regenerate updates this draft first. Click Save Draft to keep changes.</p>
+                        </div>
+                      )}
+                    </div>
+                    {selectedLead.campaign_status !== 'routed' && (
+                      <div className="p-4 border-t bg-white shrink-0">
+                        <div className="grid grid-cols-1 lg:grid-cols-3 gap-2">
+                          <Button onClick={savePreviewEmails} disabled={savingCampaignPreview} variant="outline">
+                            <Save className="h-4 w-4 mr-2" />
+                            Save Draft
+                          </Button>
+                          <Button variant="outline" onClick={undoPreviewEmails} disabled={!undoAvailable || undoingCampaignPreview}>
+                            <RotateCcw className="h-4 w-4 mr-2" />
+                            Undo Last Save
+                          </Button>
+                          <Button onClick={createAndStartCampaignFromPreview} disabled={savingCampaignPreview || routingLeads.has(selectedLead.id)}>
+                            <Send className="h-4 w-4 mr-2" />
+                            Create and Start
+                          </Button>
+                        </div>
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
             </div>
 
-            <div className="p-4 border-t flex gap-2 shrink-0 bg-white">
+            <div className="p-4 border-t flex gap-2 shrink-0 bg-white md:hidden">
               {(selectedLead.enrichment_status === 'pending' || selectedLead.enrichment_status === 'failed') && (
                 <Button
                   onClick={() => enrichLead(selectedLead.id)}
@@ -1910,220 +2036,6 @@ export function Dashboard({ userEmail }: DashboardProps) {
                   View Profile
                 </Button>
               </a>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Campaign Preview Modal */}
-      {previewCampaign && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50" onClick={() => setPreviewCampaign(null)}>
-          <div className="bg-white rounded-xl max-w-2xl w-full max-h-[85vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
-            <div className="flex items-center justify-between p-4 border-b">
-              <div>
-                <h3 className="font-semibold text-lg">{previewCampaign.campaign.name}</h3>
-                <div className="flex items-center gap-2 mt-1">
-                  <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium ${
-                    previewCampaign.campaign.status === 'active' ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-600'
-                  }`}>
-                    {previewCampaign.campaign.status}
-                  </span>
-                  {previewCampaign.campaign.persona && (
-                    <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-indigo-50 text-indigo-700">
-                      {previewCampaign.campaign.persona}
-                    </span>
-                  )}
-                  {previewCampaign.campaign.status === 'draft' && !previewCampaign.campaign.instantly_campaign_id && (
-                    <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-amber-50 text-amber-700">
-                      Not in Instantly yet
-                    </span>
-                  )}
-                </div>
-              </div>
-              <button onClick={() => setPreviewCampaign(null)} className="text-gray-400 hover:text-gray-600">
-                <X className="h-5 w-5" />
-              </button>
-            </div>
-
-            <div className="p-4 space-y-4">
-              {previewLead && (
-                <div className="rounded-lg border border-indigo-200 bg-indigo-50/40 p-3">
-                  <div className="flex items-center justify-between gap-2">
-                    <div>
-                      <p className="text-xs uppercase tracking-wide text-indigo-600 font-semibold">Lead Context</p>
-                      <p className="text-sm font-semibold text-gray-900 mt-0.5">{previewLead.full_name || previewLead.name || 'Unknown'}</p>
-                    </div>
-                    {previewLead.promotion_fit_score ? (
-                      <span className="text-xs px-2 py-1 rounded-md bg-white border border-indigo-200 text-indigo-700 font-medium">
-                        Fit {previewLead.promotion_fit_score}/10
-                      </span>
-                    ) : null}
-                  </div>
-                  <div className="mt-2 flex flex-wrap gap-2 text-xs text-gray-600">
-                    {previewLead.platform ? <span className="px-2 py-0.5 rounded-full bg-white border border-gray-200">{previewLead.platform}</span> : null}
-                    {previewLead.category ? <span className="px-2 py-0.5 rounded-full bg-white border border-gray-200">{previewLead.category}</span> : null}
-                    {previewLead.title ? <span className="px-2 py-0.5 rounded-full bg-white border border-gray-200">{previewLead.title}</span> : null}
-                  </div>
-                  {previewLead.bio ? (
-                    <div className="mt-2 text-sm text-gray-700 leading-relaxed">
-                      <p>{showFullPreviewBio ? previewLead.bio : `${previewLead.bio.slice(0, 220)}${previewLead.bio.length > 220 ? '...' : ''}`}</p>
-                      {previewLead.bio.length > 220 && (
-                        <button
-                          type="button"
-                          onClick={() => setShowFullPreviewBio((v) => !v)}
-                          className="mt-1 text-xs font-medium text-indigo-700 hover:text-indigo-900"
-                        >
-                          {showFullPreviewBio ? 'Show less' : 'Show more'}
-                        </button>
-                      )}
-                    </div>
-                  ) : null}
-                </div>
-              )}
-
-              {previewCampaign.campaign.status === 'draft' && previewCampaign.leadId && (
-                <div className="rounded-lg border border-gray-200 p-3 space-y-2">
-                  <label className="text-xs font-semibold text-gray-700 uppercase tracking-wide">Regenerate With Feedback</label>
-                  <textarea
-                    ref={regenerateFeedbackRef}
-                    placeholder="Example: make it shorter, stronger hook from their bio, less generic CTA."
-                    className="w-full min-h-[84px] rounded-md border border-gray-200 px-3 py-2 text-sm"
-                  />
-                  <Button
-                    variant="outline"
-                    onClick={regeneratePreviewEmails}
-                    disabled={regeneratingCampaignPreview}
-                    className="w-full"
-                  >
-                    {regeneratingCampaignPreview ? (
-                      <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Regenerating...</>
-                    ) : (
-                      <>Regenerate Draft</>
-                    )}
-                  </Button>
-                  <p className="text-xs text-gray-500">Regenerate updates this modal first. Click Save Draft to keep changes.</p>
-                </div>
-              )}
-              {loadingCampaignPreview ? (
-                <div className="py-8 text-center">
-                  <Loader2 className="h-6 w-6 mx-auto animate-spin text-gray-400" />
-                </div>
-              ) : previewCampaign.emails.length === 0 ? (
-                <p className="text-gray-500 text-sm text-center py-8">No email sequences found for this campaign.</p>
-              ) : (
-                previewCampaign.emails.map((email, i) => (
-                  <div key={email.id} className="rounded-lg border border-gray-200">
-                    <div className="px-4 py-2 bg-gray-50 border-b flex items-center justify-between">
-                      <span className="text-xs font-semibold text-gray-600 uppercase tracking-wide">
-                        {i === 0 ? 'Initial Email' : `Follow-up ${i}`}
-                      </span>
-                      {email.delay_days > 0 && (
-                        <span className="text-xs text-gray-400">+{email.delay_days} days</span>
-                      )}
-                    </div>
-                    <div className="p-4">
-                      {previewCampaign.campaign.status === 'draft' ? (
-                        <div className="space-y-3">
-                          <div>
-                            <label className="text-xs font-medium text-gray-600">Subject</label>
-                            <input
-                              value={email.subject}
-                              onChange={(e) => updatePreviewEmail(i, 'subject', e.target.value)}
-                              className="mt-1 w-full rounded-md border border-gray-200 px-3 py-2 text-sm"
-                            />
-                          </div>
-                          <div>
-                            <label className="text-xs font-medium text-gray-600">Body</label>
-                            <textarea
-                              value={email.body}
-                              onChange={(e) => updatePreviewEmail(i, 'body', e.target.value)}
-                              className="mt-1 w-full min-h-[140px] rounded-md border border-gray-200 px-3 py-2 text-sm"
-                            />
-                          </div>
-                          {i > 0 && (
-                            <div>
-                              <label className="text-xs font-medium text-gray-600">Delay (days)</label>
-                              <input
-                                type="number"
-                                min={0}
-                                value={email.delay_days}
-                                onChange={(e) => updatePreviewEmail(i, 'delay_days', Math.max(0, Number(e.target.value || 0)))}
-                                className="mt-1 w-28 rounded-md border border-gray-200 px-3 py-2 text-sm"
-                              />
-                            </div>
-                          )}
-                        </div>
-                      ) : (
-                        <>
-                          {email.subject && (
-                            <p className="text-sm font-medium text-gray-900 mb-2">
-                              Subject: {email.subject}
-                            </p>
-                          )}
-                          <p className="text-sm text-gray-700 whitespace-pre-wrap leading-relaxed">{email.body}</p>
-                        </>
-                      )}
-                    </div>
-                  </div>
-                ))
-              )}
-            </div>
-
-            <div className="p-4 border-t flex gap-2">
-              {previewCampaign.campaign.status === 'draft' && (
-                <Button className="flex-1" onClick={savePreviewEmails} disabled={savingCampaignPreview}>
-                  {savingCampaignPreview ? (
-                    <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Saving...</>
-                  ) : (
-                    <>Save Draft</>
-                  )}
-                </Button>
-              )}
-              {previewCampaign.campaign.status === 'draft' && (
-                <Button
-                  variant="outline"
-                  className="flex-1"
-                  onClick={undoPreviewEmails}
-                  disabled={!undoAvailable || undoingCampaignPreview}
-                >
-                  {undoingCampaignPreview ? (
-                    <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Undoing...</>
-                  ) : (
-                    <>Undo Last Save</>
-                  )}
-                </Button>
-              )}
-              {previewCampaign.campaign.status === 'draft' && previewCampaign.leadId && (
-                <Button
-                  className="flex-1"
-                  onClick={createAndStartCampaignFromPreview}
-                  disabled={savingCampaignPreview || startingCampaignLeadId === previewCampaign.leadId || routingLeads.has(previewCampaign.leadId)}
-                >
-                  {(startingCampaignLeadId === previewCampaign.leadId || routingLeads.has(previewCampaign.leadId)) ? (
-                    <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Creating & Starting...</>
-                  ) : (
-                    <>Create and Start Campaign</>
-                  )}
-                </Button>
-              )}
-              {previewCampaign.campaign.instantly_campaign_id ? (
-                <a
-                  href={`https://app.instantly.ai/app/campaign/${previewCampaign.campaign.instantly_campaign_id}/analytics`}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="flex-1"
-                >
-                  <Button variant="outline" className="w-full">
-                    <ExternalLink className="h-4 w-4 mr-2" />
-                    Open in Instantly
-                  </Button>
-                </a>
-              ) : (
-                <Button variant="outline" className="flex-1" disabled>
-                  <ExternalLink className="h-4 w-4 mr-2" />
-                  Not sent yet
-                </Button>
-              )}
             </div>
           </div>
         </div>
