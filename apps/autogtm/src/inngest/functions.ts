@@ -97,10 +97,11 @@ export const processWebsetRun = inngest.createFunction(
     // Poll until webset is done
     let websetStatus = 'running';
     let attempts = 0;
-    const maxAttempts = 60; // 5 minutes max (60 * 5 seconds)
+    const pollIntervalSeconds = 10;
+    const maxAttempts = 540; // 90 minutes max (540 * 10 seconds)
 
     while (websetStatus !== 'idle' && attempts < maxAttempts) {
-      await step.sleep(`wait-${attempts}`, '5s');
+      await step.sleep(`wait-${attempts}`, `${pollIntervalSeconds}s`);
       attempts++;
 
       const webset = await step.run(`check-status-${attempts}`, async () => {
@@ -125,7 +126,7 @@ export const processWebsetRun = inngest.createFunction(
       // Timed out
       await supabase.from('webset_runs').update({ status: 'failed' }).eq('id', websetRunId);
       await supabase.from('exa_queries').update({ status: 'failed' }).eq('id', queryId);
-      throw new Error(`Webset ${websetId} timed out after ${maxAttempts * 5} seconds`);
+      throw new Error(`Webset ${websetId} timed out after ${maxAttempts * pollIntervalSeconds} seconds`);
     }
 
     // Extract items and create leads
