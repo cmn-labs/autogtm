@@ -17,53 +17,47 @@
 
 ## How it works
 
-```
-┌─────────────┐     ┌──────────────┐     ┌────────────────┐     ┌──────────────┐
-│  You add     │     │  AI generates │     │  Exa.ai finds  │     │  AI enriches │
-│  context     │ ──▶ │  search       │ ──▶ │  matching      │ ──▶ │  bio, score, │
-│  (plain      │     │  queries      │     │  leads daily   │     │  email, fit  │
-│  English)    │     │  (8:30 AM)    │     │  (9:00 AM)     │     │              │
-└─────────────┘     └──────────────┘     └────────────────┘     └──────┬───────┘
-                                                                       │
-                                                                       ▼
-┌─────────────┐     ┌──────────────┐     ┌────────────────┐     ┌──────────────┐
-│  Analytics   │     │  Instantly    │     │  You approve   │     │  AI writes   │
-│  sync hourly │ ◀── │  sends on    │ ◀── │  or autopilot  │ ◀── │  personalized│
-│  + digest    │     │  schedule    │     │  auto-adds     │     │  email copy  │
-│  at 6 PM     │     │              │     │                │     │              │
-└─────────────┘     └──────────────┘     └────────────────┘     └──────────────┘
-```
+1. **You add instructions** in plain English.
+2. **Choose execution mode per instruction**:
+   - `Queue`: picked up by scheduled generation/run.
+   - `Run now`: generates and starts search immediately.
+3. **AI generates search queries** from instruction context.
+4. **Exa runs search and extracts leads** with enrichment hints.
+5. **AI enriches leads** (bio, fit score, contact context).
+6. **AI creates a draft campaign per lead** for review.
+7. **You review and start**, or **Autopilot** starts for high-fit leads when enabled.
+8. **Instantly status + analytics sync hourly**; digest summary is sent at 6 PM.
 
 ### Controls
 
 | Toggle | What it does |
 |---|---|
 | **System ON/OFF** | Master switch. When OFF, nothing runs. No searches, no enrichment, no campaigns. |
-| **Autopilot ON/OFF** | When ON, high-fit leads (score 7+) are auto-added to campaigns. When OFF, you review manually. |
+| **Autopilot ON/OFF** | When ON, high-fit leads (score 7+) are auto-started. When OFF, you review manually. |
 
 ### Daily schedule
 
 | Time | What happens |
 |---|---|
-| 8:30 AM | Generate search queries from your instructions |
+| 8:30 AM | Generate queued search queries from instructions |
 | 9:00 AM | Run searches, discover and enrich leads |
-| Hourly | Sync campaign analytics from Instantly |
+| Hourly | Sync campaign status and analytics from Instantly |
 | 6:00 PM | Send daily digest email |
 
 ---
 
 ## Features
 
-- **AI lead discovery** — Exa.ai websets find people matching your natural-language description
-- **AI enrichment** — Bio, social links, audience size, expertise tags, and a 1-10 fit score with reasoning
-- **AI email copywriting** — Personalized multi-step sequences generated per campaign persona
-- **Campaign management** — Creates and manages campaigns in Instantly.ai, tracks performance
-- **System + Autopilot toggles** — Master switch for the pipeline, separate toggle for auto-routing
-- **Exploration mode** — When no new instructions exist, AI generates creative queries to keep the pipeline fresh
-- **Daily digest** — Summary email with leads found, emails sent, opens, and replies
-- **Multi-company** — Manage multiple company profiles from a single dashboard
+- **AI lead discovery:** Exa.ai websets find people matching your natural-language description.
+- **AI enrichment:** Bio, social links, audience size, expertise tags, and a 1-10 fit score with reasoning.
+- **AI email copywriting:** Personalized multi-step sequences generated per lead draft.
+- **Campaign management:** Draft-first campaigns with controlled start in Instantly.ai.
+- **System + Autopilot toggles:** Company-level controls for full automation and auto-start behavior.
+- **Exploration mode:** When no new instructions exist, AI generates creative queries to keep pipeline coverage fresh.
+- **Daily digest:** Summary email with leads found, emails sent, opens, and replies.
+- **Multi-company:** Manage multiple company profiles from a single dashboard.
 
-## Tech Stack
+## Stack
 
 | Layer | Technology |
 |---|---|
@@ -75,47 +69,6 @@
 | Email Sending | [Instantly.ai](https://instantly.ai) |
 | AI | [OpenAI](https://openai.com) (GPT-4.1 / GPT-5-mini) |
 | Digest Emails | [Resend](https://resend.com) |
-
-<details>
-<summary><strong>Project Structure</strong></summary>
-
-```
-apps/autogtm/              Next.js app (frontend + API routes)
-  src/
-    app/                   Pages and API routes
-    components/            React components (Dashboard, CompanySetup, etc.)
-    inngest/               Background job definitions
-    lib/                   Supabase clients, utilities
-
-packages/autogtm-core/     Core logic (shared, framework-agnostic)
-  src/
-    ai/                    AI agents (enrichLead, generateQueries, determineCampaign, generateEmailCopy)
-    clients/               Exa and Instantly API clients
-    campaigns/             Campaign creation orchestration
-    db/                    Supabase database operations
-    types/                 TypeScript types and Zod schemas
-```
-
-</details>
-
-<details>
-<summary><strong>Database Schema</strong></summary>
-
-The [`schema.sql`](./schema.sql) file creates these tables:
-
-| Table | Purpose |
-|---|---|
-| `companies` | Company profiles with targeting config, system/autopilot flags |
-| `company_updates` | Natural-language instructions that drive query generation |
-| `exa_queries` | AI-generated search queries linked to instructions |
-| `webset_runs` | Tracks Exa webset execution and results |
-| `leads` | Discovered leads with enrichment data, fit scores, and campaign routing |
-| `campaigns` | Email campaigns synced with Instantly.ai |
-| `campaign_emails` | Email copy (subject + body) for each campaign step |
-| `daily_digests` | Daily performance summaries |
-| `allowed_users` | Email whitelist for signup access |
-
-</details>
 
 ---
 
@@ -144,7 +97,7 @@ npm install
 
 # Configure environment
 cp apps/autogtm/.env.example apps/autogtm/.env.local
-# Fill in your API keys (see table below)
+# Fill in values in .env.local
 
 # Run
 npm run dev
@@ -157,30 +110,6 @@ For background jobs, run the Inngest dev server in a separate terminal:
 ```bash
 npx inngest-cli@latest dev
 ```
-
-<details>
-<summary><strong>Environment Variables</strong></summary>
-
-| Variable | Required | Where to get it |
-|---|---|---|
-| `NEXT_PUBLIC_SUPABASE_URL` | Yes | Supabase project settings > API |
-| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Yes | Supabase project settings > API |
-| `SUPABASE_SERVICE_ROLE_KEY` | Yes | Supabase project settings > API (keep secret) |
-| `EXA_API_KEY` | Yes | [exa.ai](https://exa.ai) dashboard |
-| `INSTANTLY_API_KEY` | Yes | [instantly.ai](https://instantly.ai) settings > Integrations |
-| `OPENAI_API_KEY` | Yes | [platform.openai.com](https://platform.openai.com) API keys |
-| `INNGEST_SIGNING_KEY` | Yes | [inngest.com](https://inngest.com) > your app > signing key |
-| `INNGEST_EVENT_KEY` | Yes | [inngest.com](https://inngest.com) > your app > event key |
-| `RESEND_API_KEY` | No | [resend.com](https://resend.com) for daily digest emails |
-| `DIGEST_FROM_EMAIL` | No | Sender address for digest emails |
-| `DIGEST_RECIPIENTS` | No | Comma-separated recipient emails for daily digest |
-| `CONTACT_FORM_TO` | No | Email address to receive "Request cloud access" form submissions (falls back to first `DIGEST_RECIPIENTS` if unset) |
-| `INVITE_CODES` | No | Comma-separated codes users need to sign up (default: `AUTOGTM`) |
-| `NEXT_PUBLIC_APP_URL` | No | Your app URL (default: `http://localhost:3200`) |
-| `NEXT_PUBLIC_GOOGLE_CLIENT_ID` | No | Google Cloud Console, for Google OAuth login |
-| `REDIS_URL` | No | Redis connection string, for rate limiting |
-
-</details>
 
 <details>
 <summary><strong>Supabase Setup</strong></summary>
@@ -200,7 +129,6 @@ This creates all required tables, indexes, RLS policies, and helper functions.
 autogtm is a standard Next.js app. Deploy to any platform that supports it:
 
 - **Vercel** — recommended, zero-config Next.js deployment
-- **Netlify**, **Railway**, **Fly.io** — all work with Next.js
 
 Make sure to:
 1. Set all environment variables in your hosting platform

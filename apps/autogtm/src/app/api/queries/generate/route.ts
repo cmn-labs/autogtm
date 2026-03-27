@@ -3,10 +3,18 @@ import { inngest } from '@/inngest/client';
 
 export async function POST(request: NextRequest) {
   try {
-    const { companyId } = await request.json();
+    const { companyId, instructionId } = await request.json();
 
     if (!companyId) {
       return NextResponse.json({ error: 'companyId is required' }, { status: 400 });
+    }
+
+    if (instructionId) {
+      await inngest.send({
+        name: 'autogtm/queries.generate-for-instruction',
+        data: { companyId, instructionId },
+      });
+      return NextResponse.json({ success: true, message: 'Instruction-specific query generation started' });
     }
 
     await inngest.send({

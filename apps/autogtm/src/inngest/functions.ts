@@ -3,6 +3,7 @@ import { getExaClient } from '@autogtm/core/clients/exa';
 import { enrichLead } from '@autogtm/core/ai/enrichLead';
 import {
   addLeadsToCampaign,
+  getCampaign,
   getCampaignAnalytics,
 } from '@autogtm/core/clients/instantly';
 import {
@@ -27,6 +28,16 @@ const getSupabase = () => createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.SUPABASE_SERVICE_ROLE_KEY!
 );
+
+function mapInstantlyCampaignStatus(status: number): 'draft' | 'active' | 'paused' | 'completed' {
+  // Instantly status codes: 0=draft, 1=active, 2=paused, 3=completed, 4=sub-sequences running.
+  if (status === 0) return 'draft';
+  if (status === 1 || status === 4) return 'active';
+  if (status === 2) return 'paused';
+  if (status === 3) return 'completed';
+  // Unknown/negative statuses are treated as paused locally to avoid invalid DB values.
+  return 'paused';
+}
 
 /** Check if system is enabled for a company. Returns false if disabled. */
 async function isSystemEnabled(supabase: any, companyId: string): Promise<boolean> {
@@ -469,6 +480,109 @@ export const generateQueriesOnDemand = inngest.createFunction(
 );
 
 /**
+ * Targeted Query Generation - Generate query for one specific instruction
+ */
+export const generateQueryForInstruction = inngest.createFunction(
+  {
+    id: 'generate-query-for-instruction',
+    name: 'Generate Query For Instruction',
+    retries: 1,
+    concurrency: [{ limit: 5 }],
+  },
+  { event: 'autogtm/queries.generate-for-instruction' },
+  async ({ event, step, logger }) => {
+    const { companyId, instructionId } = event.data as { companyId: string; instructionId: string };
+    const supabase = getSupabase();
+
+    const systemOn = await step.run('check-system', () => isSystemEnabled(supabase, companyId));
+    if (!systemOn) {
+      logger.info(`System disabled for company ${companyId}, skipping targeted generation`);
+      return { skipped: true };
+    }
+
+    const company = await step.run('get-company', async () => {
+      const { data } = await supabase
+        .from('companies')
+        .select('id, name, website, description, target_audience')
+        .eq('id', companyId)
+        .single();
+      return data;
+    });
+
+    const instruction = await step.run('get-instruction', async () => {
+      const { data } = await supabase
+        .from('company_updates')
+        .select('id, company_id, content, query_generated')
+        .eq('id', instructionId)
+        .eq('company_id', companyId)
+        .single();
+      return data;
+    });
+
+    if (!company) throw new Error(`Company ${companyId} not found`);
+    if (!instruction) throw new Error(`Instruction ${instructionId} not found for company ${companyId}`);
+
+    const existingQuery = await step.run('check-existing-query', async () => {
+      const { data } = await supabase
+        .from('exa_queries')
+        .select('id')
+        .eq('company_id', companyId)
+        .eq('source_instruction_id', instructionId)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      return data;
+    });
+
+    if (existingQuery?.id) {
+      logger.info(`Query already exists for instruction ${instructionId}: ${existingQuery.id}`);
+      return { queryId: existingQuery.id, reused: true };
+    }
+
+    const generated = await step.run('generate-focused-query', async () => {
+      const { generateFocusedQuery } = await import('@autogtm/core/ai/generateDailyQuery');
+      return generateFocusedQuery({
+        company: {
+          name: company.name,
+          website: company.website,
+          description: company.description,
+          targetAudience: company.target_audience,
+        },
+        instruction: instruction.content,
+      });
+    });
+
+    const insertedQuery = await step.run('insert-query', async () => {
+      const { data, error } = await supabase
+        .from('exa_queries')
+        .insert({
+          company_id: companyId,
+          query: generated.query,
+          criteria: generated.criteria,
+          is_active: true,
+          status: 'pending',
+          source_instruction_id: instructionId,
+          generation_rationale: generated.rationale,
+        })
+        .select('id')
+        .single();
+      if (error) throw error;
+      return data;
+    });
+
+    await step.run('mark-instruction-processed', async () => {
+      await supabase
+        .from('company_updates')
+        .update({ query_generated: true })
+        .eq('id', instructionId);
+    });
+
+    logger.info(`Generated query ${insertedQuery.id} for instruction ${instructionId}`);
+    return { queryId: insertedQuery.id, reused: false };
+  }
+);
+
+/**
  * Daily Webset Search (parent) - Cron fan-out: gets companies, fires one child event per company
  */
 export const dailyWebsetSearch = inngest.createFunction(
@@ -687,29 +801,46 @@ export const syncCampaignAnalytics = inngest.createFunction(
   },
   { cron: '0 * * * *' }, // Every hour
   async ({ step, logger }) => {
-    const campaigns = await step.run('get-active-campaigns', async () => {
+    const supabase = getSupabase();
+
+    const campaigns = await step.run('get-live-campaigns', async () => {
       const supabase = getSupabase();
-      const { data } = await supabase.from('campaigns').select('*').eq('status', 'active');
+      const { data } = await supabase
+        .from('campaigns')
+        .select('*')
+        .not('instantly_campaign_id', 'is', null)
+        .in('status', ['draft', 'active', 'paused', 'completed']);
       return data || [];
     });
 
     let updated = 0;
     for (const campaign of campaigns) {
-      if (campaign.status === 'active') {
-        await step.run(`sync-campaign-${campaign.id}`, async () => {
-          try {
+      await step.run(`sync-campaign-${campaign.id}`, async () => {
+        try {
+          const instantlyCampaign = await getCampaign(campaign.instantly_campaign_id);
+          const nextStatus = mapInstantlyCampaignStatus(instantlyCampaign.status);
+
+          if (nextStatus !== campaign.status) {
+            await supabase
+              .from('campaigns')
+              .update({ status: nextStatus, updated_at: new Date().toISOString() })
+              .eq('id', campaign.id);
+            logger.info(`Campaign ${campaign.id} status synced: ${campaign.status} -> ${nextStatus}`);
+          }
+
+          if (nextStatus === 'active') {
             const analytics = await getCampaignAnalytics(campaign.instantly_campaign_id);
             await updateCampaignStats(campaign.id, {
               emails_sent: analytics.sent,
               opens: analytics.opened,
               replies: analytics.replied,
             });
-            updated++;
-          } catch (e) {
-            logger.error(`Failed to sync campaign ${campaign.id}:`, e);
           }
-        });
-      }
+          updated++;
+        } catch (e) {
+          logger.error(`Failed to sync campaign ${campaign.id}:`, e);
+        }
+      });
     }
 
     return { campaignsUpdated: updated };
@@ -1004,6 +1135,7 @@ export const functions = [
   addLeadToCampaignJob,
   dailyQueryGeneration,
   generateQueriesOnDemand,
+  generateQueryForInstruction,
   dailyWebsetSearch,
   runCompanyWebsetSearch,
   dailyDigest,
