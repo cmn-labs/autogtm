@@ -19,7 +19,7 @@ export async function GET(
 
     const { data: updates, error } = await supabase
       .from('company_updates')
-      .select('*')
+      .select('*, outreach_prompts(name)')
       .eq('company_id', companyId)
       .order('created_at', { ascending: false });
 
@@ -38,7 +38,11 @@ export async function POST(
 ) {
   try {
     const { id: companyId } = await params;
-    const { content, mode } = await request.json() as { content?: string; mode?: 'queue' | 'run_now' };
+    const { content, mode, outreach_prompt_id } = await request.json() as {
+      content?: string;
+      mode?: 'queue' | 'run_now';
+      outreach_prompt_id?: string | null;
+    };
 
     if (!content || typeof content !== 'string') {
       return NextResponse.json({ error: 'Content is required' }, { status: 400 });
@@ -49,10 +53,34 @@ export async function POST(
       process.env.SUPABASE_SERVICE_ROLE_KEY!
     );
 
+    let outreachPromptSnapshot: string | null = null;
+    let outreachPromptId: string | null = outreach_prompt_id ?? null;
+    if (outreachPromptId) {
+      const { data: selectedPrompt, error: promptError } = await supabase
+        .from('outreach_prompts')
+        .select('id, content, company_id, is_archived')
+        .eq('id', outreachPromptId)
+        .eq('company_id', companyId)
+        .single();
+      if (promptError || !selectedPrompt) {
+        return NextResponse.json({ error: 'Invalid outreach prompt' }, { status: 400 });
+      }
+      if (selectedPrompt.is_archived) {
+        return NextResponse.json({ error: 'Selected outreach prompt is archived' }, { status: 400 });
+      }
+      outreachPromptSnapshot = selectedPrompt.content;
+      outreachPromptId = selectedPrompt.id;
+    }
+
     const { data, error } = await supabase
       .from('company_updates')
-      .insert({ company_id: companyId, content })
-      .select()
+      .insert({
+        company_id: companyId,
+        content,
+        outreach_prompt_id: outreachPromptId,
+        outreach_prompt_snapshot: outreachPromptSnapshot,
+      })
+      .select('*, outreach_prompts(name)')
       .single();
 
     if (error) throw error;

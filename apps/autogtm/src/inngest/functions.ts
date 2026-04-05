@@ -19,6 +19,7 @@ import {
 import { determineCampaignForLead } from '@autogtm/core/ai/determineCampaign';
 import { createDraftCampaignForLead, sendDraftCampaignForLead } from '@autogtm/core/campaigns/createCampaignForPersona';
 import { extractEmailFromEnrichmentData } from '@autogtm/core/ai/extractEmail';
+import { resolveOutreachPromptForLead } from '@/lib/outreachPromptResolver';
 import { Resend } from 'resend';
 import { createClient } from '@supabase/supabase-js';
 
@@ -998,9 +999,17 @@ export const enrichLeadJob = inngest.createFunction(
 
     // Create per-lead draft campaign, then set as suggestion.
     const existingDraft = await step.run('get-existing-draft', () => getCampaignBySourceLeadId(leadId));
+    const resolvedPrompt = await step.run('resolve-outreach-prompt', () => resolveOutreachPromptForLead({
+      supabase,
+      companyId,
+      leadId,
+      companyEmailPrompt: company.email_prompt,
+    }));
+    logger.info(`Prompt resolution for ${leadId}: ${resolvedPrompt.source}`);
     const campaign = existingDraft || await step.run('create-draft-campaign', () =>
       createDraftCampaignForLead({
         company: { id: companyId, name: company.name, description: company.description, target_audience: company.target_audience, sending_emails: company.sending_emails, default_sequence_length: company.default_sequence_length, email_prompt: company.email_prompt },
+        resolvedEmailPrompt: resolvedPrompt.prompt,
         suggestedName: routingDecision.suggestedName,
         suggestedPersona: routingDecision.suggestedPersona,
         leadId,

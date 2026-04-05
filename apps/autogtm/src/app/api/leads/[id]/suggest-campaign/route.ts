@@ -3,6 +3,7 @@ import { createClient } from '@supabase/supabase-js';
 import { determineCampaignForLead } from '@autogtm/core/ai/determineCampaign';
 import { setSuggestedCampaign, markLeadSkipped, getCampaignBySourceLeadId } from '@autogtm/core/db/autogtmDbCalls';
 import { createDraftCampaignForLead } from '@autogtm/core/campaigns/createCampaignForPersona';
+import { resolveOutreachPromptForLead } from '@/lib/outreachPromptResolver';
 
 export async function POST(
   request: NextRequest,
@@ -82,8 +83,16 @@ export async function POST(
       return NextResponse.json({ action: 'suggested', campaignId: existingDraft.id, reason: decision.reason });
     }
 
+    const resolvedPrompt = await resolveOutreachPromptForLead({
+      supabase,
+      companyId,
+      leadId,
+      companyEmailPrompt: company.email_prompt,
+    });
+
     const newCampaign = await createDraftCampaignForLead({
       company: { id: companyId, name: company.name, description: company.description, target_audience: company.target_audience, sending_emails: company.sending_emails, default_sequence_length: company.default_sequence_length, email_prompt: company.email_prompt },
+      resolvedEmailPrompt: resolvedPrompt.prompt,
       suggestedName: decision.suggestedName,
       suggestedPersona: decision.suggestedPersona,
       leadId,

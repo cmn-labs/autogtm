@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { z } from 'zod';
 import { regenerateEmailSequenceWithFeedback } from '@autogtm/core/ai/generateEmailCopy';
+import { resolveOutreachPromptForLead } from '@/lib/outreachPromptResolver';
 
 const RegeneratePayloadSchema = z.object({
   leadId: z.string().uuid(),
@@ -65,6 +66,14 @@ export async function POST(
       return NextResponse.json({ error: 'Company not found' }, { status: 404 });
     }
 
+    const resolvedPrompt = await resolveOutreachPromptForLead({
+      supabase,
+      companyId: campaign.company_id,
+      leadId: payload.leadId,
+      companyEmailPrompt: company.email_prompt,
+    });
+    console.log('[prompt-resolution] regenerate', { campaignId, leadId: payload.leadId, source: resolvedPrompt.source });
+
     const targetPersona = [
       campaign.persona || null,
       lead.category ? `Category: ${lead.category}` : null,
@@ -83,7 +92,7 @@ export async function POST(
       existingSequence: emails,
       feedback: payload.feedback,
       sequenceLength: company.default_sequence_length,
-      customPrompt: company.email_prompt,
+      customPrompt: resolvedPrompt.prompt,
     });
 
     const nextEmails = [
