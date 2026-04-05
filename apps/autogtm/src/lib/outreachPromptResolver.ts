@@ -43,6 +43,7 @@ export async function resolveOutreachPromptForLead(params: {
     .from('leads')
     .select('id, exa_queries!inner(source_instruction_id, company_id)')
     .eq('id', leadId)
+    .eq('exa_queries.company_id', companyId)
     .single();
 
   const sourceInstructionId = (leadRow?.exa_queries as any)?.source_instruction_id as string | null | undefined;

@@ -30,6 +30,7 @@ export async function POST(
         .select('content')
         .eq('id', basePromptId)
         .eq('company_id', companyId)
+        .eq('is_archived', false)
         .single();
       if (error || !prompt) {
         return NextResponse.json({ error: 'Invalid basePromptId' }, { status: 400 });
