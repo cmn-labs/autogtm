@@ -26,6 +26,7 @@ function textToHtml(text: string): string {
 
 export interface CreateCampaignForPersonaParams {
   company: Pick<Company, 'id' | 'name' | 'description' | 'target_audience'> & { sending_emails?: string[]; default_sequence_length?: number; email_prompt?: string | null };
+  resolvedEmailPrompt?: string | null;
   suggestedName: string;
   suggestedPersona: string;
   leadId: string;
@@ -37,7 +38,7 @@ export interface CreateCampaignForPersonaParams {
 export async function createDraftCampaignForLead(
   params: CreateCampaignForPersonaParams
 ): Promise<Campaign> {
-  const { company, suggestedName, suggestedPersona, leadId, leadFullName, leadBio, leadCategory } = params;
+  const { company, resolvedEmailPrompt, suggestedName, suggestedPersona, leadId, leadFullName, leadBio, leadCategory } = params;
 
   // Generate email copy tailored to this lead persona
   const sequenceLength = company.default_sequence_length ?? 2;
@@ -58,7 +59,7 @@ export async function createDraftCampaignForLead(
     targetPersona: personaContext,
     tone: 'friendly',
     sequenceLength,
-    customPrompt: company.email_prompt,
+    customPrompt: resolvedEmailPrompt ?? company.email_prompt,
   });
 
   // Save draft campaign record in our DB

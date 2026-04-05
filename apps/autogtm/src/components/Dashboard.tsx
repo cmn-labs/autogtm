@@ -112,7 +112,19 @@ interface Stats {
 interface Instruction {
   id: string;
   content: string;
+  outreach_prompt_id?: string | null;
+  outreach_prompt_snapshot?: string | null;
+  outreach_prompts?: { name: string } | null;
   created_at: string;
+}
+
+interface OutreachPrompt {
+  id: string;
+  name: string;
+  content: string;
+  is_archived: boolean;
+  created_at: string;
+  updated_at: string;
 }
 
 interface Company {
@@ -153,7 +165,19 @@ export function Dashboard({ userEmail }: DashboardProps) {
   const [routingLeads, setRoutingLeads] = useState<Set<string>>(new Set());
   const [suggestingLeads, setSuggestingLeads] = useState<Set<string>>(new Set());
   const [instructions, setInstructions] = useState<Instruction[]>([]);
+  const [outreachPrompts, setOutreachPrompts] = useState<OutreachPrompt[]>([]);
   const [newInstruction, setNewInstruction] = useState('');
+  const [instructionPromptId, setInstructionPromptId] = useState<string>('');
+  const [instructionPromptDraft, setInstructionPromptDraft] = useState('');
+  const [instructionOverrideOpen, setInstructionOverrideOpen] = useState(false);
+  const [defaultInstructionPrompt, setDefaultInstructionPrompt] = useState('');
+  const [instructionComposerOpen, setInstructionComposerOpen] = useState(false);
+  const [savingOutreachPrompt, setSavingOutreachPrompt] = useState(false);
+  const [newOutreachPromptName, setNewOutreachPromptName] = useState('');
+  const [newOutreachPromptContent, setNewOutreachPromptContent] = useState('');
+  const [outreachPromptEdits, setOutreachPromptEdits] = useState<Record<string, { name: string; content: string }>>({});
+  const [savingLibraryPromptId, setSavingLibraryPromptId] = useState<string | null>(null);
+  const [creatingLibraryPrompt, setCreatingLibraryPrompt] = useState(false);
   const [addingInstruction, setAddingInstruction] = useState(false);
   const [company, setCompany] = useState<Company | null>(null);
   const [editingCompany, setEditingCompany] = useState(false);
@@ -210,6 +234,19 @@ export function Dashboard({ userEmail }: DashboardProps) {
     }
   }, [selectedLead?.id, selectedLead?.suggested_campaign_id, selectedLead?.campaign_id, selectedLead?.campaign_status]);
 
+  useEffect(() => {
+    const loadDefaultPrompt = async () => {
+      if (!instructionComposerOpen || defaultInstructionPrompt) return;
+      try {
+        const res = await fetch('/api/email-prompt/default');
+        if (!res.ok) return;
+        const data = await res.json();
+        setDefaultInstructionPrompt(data.prompt || '');
+      } catch {}
+    };
+    void loadDefaultPrompt();
+  }, [instructionComposerOpen, defaultInstructionPrompt]);
+
   // Poll for leads in transitional states (enriching, routing)
   useEffect(() => {
     const hasTransitional = leads.some(
@@ -238,7 +275,7 @@ export function Dashboard({ userEmail }: DashboardProps) {
   const fetchData = async () => {
     setLoading(true);
     try {
-      const [queriesRes, leadsRes, campaignsRes, statsRes, instructionsRes, companyRes, accountsRes] = await Promise.all([
+      const [queriesRes, leadsRes, campaignsRes, statsRes, instructionsRes, companyRes, accountsRes, outreachPromptsRes] = await Promise.all([
         fetch(`/api/queries?company_id=${companyId}`),
         fetch(`/api/leads?company_id=${companyId}`),
         fetch(`/api/campaigns?company_id=${companyId}`),
@@ -246,6 +283,7 @@ export function Dashboard({ userEmail }: DashboardProps) {
         fetch(`/api/companies/${companyId}/updates`),
         fetch(`/api/companies/${companyId}`),
         fetch('/api/instantly/accounts'),
+        fetch(`/api/companies/${companyId}/outreach-prompts`),
       ]);
 
       if (queriesRes.ok) {
@@ -285,6 +323,10 @@ export function Dashboard({ userEmail }: DashboardProps) {
       if (accountsRes.ok) {
         const data = await accountsRes.json();
         setInstantlyAccounts(data.accounts || []);
+      }
+      if (outreachPromptsRes.ok) {
+        const data = await outreachPromptsRes.json();
+        setOutreachPrompts(data.prompts || []);
       }
     } catch (error) {
       console.error('Error fetching data:', error);
@@ -634,16 +676,143 @@ export function Dashboard({ userEmail }: DashboardProps) {
   const filteredLeads = selectedQueryFilter === 'all'
     ? leads
     : leads.filter(l => l.query_id === selectedQueryFilter);
+  const selectedInstructionPreset = instructionPromptId
+    ? outreachPrompts.find((prompt) => prompt.id === instructionPromptId) || null
+    : null;
+
+  const saveOutreachPrompt = async (): Promise<string | null> => {
+    if (!companyId || !instructionPromptDraft.trim()) return null;
+    setSavingOutreachPrompt(true);
+    try {
+      const normalizedInstruction = newInstruction.trim().replace(/\s+/g, ' ');
+      const inferredName = normalizedInstruction
+        ? `Prompt for: ${normalizedInstruction.slice(0, 64)}`
+        : `Prompt ${new Date().toLocaleDateString()}`;
+      const response = await fetch(`/api/companies/${companyId}/outreach-prompts`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: inferredName,
+          content: instructionPromptDraft.trim(),
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || 'Failed to save outreach prompt');
+      }
+      const createdPrompt = data.prompt as OutreachPrompt;
+      if (createdPrompt) {
+        setOutreachPrompts((prev) => [createdPrompt, ...prev]);
+        setInstructionPromptId(createdPrompt.id);
+        return createdPrompt.id;
+      }
+      return null;
+    } catch (error: any) {
+      toast({ variant: 'destructive', title: 'Error', description: error.message || 'Failed to save outreach prompt' });
+      return null;
+    } finally {
+      setSavingOutreachPrompt(false);
+    }
+  };
+
+  const createOutreachPromptPreset = async () => {
+    if (!companyId || !newOutreachPromptName.trim() || !newOutreachPromptContent.trim()) return;
+    setCreatingLibraryPrompt(true);
+    try {
+      const response = await fetch(`/api/companies/${companyId}/outreach-prompts`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: newOutreachPromptName.trim(),
+          content: newOutreachPromptContent.trim(),
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || 'Failed to create prompt preset');
+      }
+      setOutreachPrompts((prev) => [data.prompt, ...prev]);
+      setNewOutreachPromptName('');
+      setNewOutreachPromptContent('');
+      toast({ title: 'Prompt preset created' });
+    } catch (error: any) {
+      toast({ variant: 'destructive', title: 'Error', description: error.message || 'Failed to create prompt preset' });
+    } finally {
+      setCreatingLibraryPrompt(false);
+    }
+  };
+
+  const saveOutreachPromptPreset = async (promptId: string) => {
+    if (!companyId) return;
+    const draft = outreachPromptEdits[promptId];
+    if (!draft) return;
+    setSavingLibraryPromptId(promptId);
+    try {
+      const response = await fetch(`/api/companies/${companyId}/outreach-prompts/${promptId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: draft.name,
+          content: draft.content,
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || 'Failed to save prompt preset');
+      }
+      setOutreachPrompts((prev) => prev.map((p) => (p.id === promptId ? data.prompt : p)));
+      setOutreachPromptEdits((prev) => {
+        const next = { ...prev };
+        delete next[promptId];
+        return next;
+      });
+      toast({ title: 'Prompt preset saved' });
+    } catch (error: any) {
+      toast({ variant: 'destructive', title: 'Error', description: error.message || 'Failed to save prompt preset' });
+    } finally {
+      setSavingLibraryPromptId(null);
+    }
+  };
+
+  const deleteOutreachPromptPreset = async (promptId: string) => {
+    if (!companyId) return;
+    try {
+      const response = await fetch(`/api/companies/${companyId}/outreach-prompts/${promptId}`, {
+        method: 'DELETE',
+      });
+      if (!response.ok) {
+        const data = await response.json();
+        throw new Error(data.error || 'Failed to delete prompt preset');
+      }
+      setOutreachPrompts((prev) => prev.filter((p) => p.id !== promptId));
+      setOutreachPromptEdits((prev) => {
+        const next = { ...prev };
+        delete next[promptId];
+        return next;
+      });
+      if (instructionPromptId === promptId) {
+        setInstructionPromptId('');
+      }
+      toast({ title: 'Prompt preset deleted' });
+    } catch (error: any) {
+      toast({ variant: 'destructive', title: 'Error', description: error.message || 'Failed to delete prompt preset' });
+    }
+  };
 
   const addInstruction = async (mode: 'queue' | 'run_now' = 'queue') => {
     if (!newInstruction.trim() || !companyId) return;
     setAddingInstruction(true);
     if (mode === 'run_now') setRunningInstructionNow(true);
     try {
+      let outreachPromptId: string | null = instructionPromptId || null;
+      if (!outreachPromptId && instructionPromptDraft.trim()) {
+        outreachPromptId = await saveOutreachPrompt();
+      }
+
       const response = await fetch(`/api/companies/${companyId}/updates`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ content: newInstruction.trim(), mode }),
+        body: JSON.stringify({ content: newInstruction.trim(), mode, outreach_prompt_id: outreachPromptId }),
       });
       const data = await response.json();
 
@@ -654,6 +823,10 @@ export function Dashboard({ userEmail }: DashboardProps) {
       if (data.update) {
         setInstructions((prev) => [data.update, ...prev]);
         setNewInstruction('');
+        setInstructionPromptId('');
+        setInstructionPromptDraft('');
+        setInstructionOverrideOpen(false);
+        setInstructionComposerOpen(false);
       }
 
       if (mode === 'queue') {
@@ -1001,26 +1174,128 @@ export function Dashboard({ userEmail }: DashboardProps) {
                         <span className="font-medium text-gray-900">Instructions</span>
                         <span className="text-xs text-gray-400">Tell the AI what kind of leads to find</span>
                       </div>
-                      <div className="flex gap-2 mb-4">
-                        <input
-                          type="text"
-                          value={newInstruction}
-                          onChange={(e) => setNewInstruction(e.target.value)}
-                          onKeyDown={(e) => e.key === 'Enter' && addInstruction()}
-                          placeholder="e.g., 'Focus on acting coaches with 5-20k followers'"
-                          className="flex-1 text-sm px-4 py-2.5 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-                        />
-                        <Button variant="outline" onClick={() => addInstruction('queue')} disabled={addingInstruction || runningInstructionNow || !newInstruction.trim()}>
-                          {addingInstruction ? 'Adding...' : 'Queue'}
-                        </Button>
-                        <Button onClick={() => addInstruction('run_now')} disabled={addingInstruction || runningInstructionNow || !newInstruction.trim()}>
-                          {runningInstructionNow ? (
-                            <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Running...</>
+                      {!instructionComposerOpen ? (
+                        <div className="mb-4">
+                          <Button
+                            variant="outline"
+                            onClick={() => setInstructionComposerOpen(true)}
+                          >
+                            Add Instruction
+                          </Button>
+                        </div>
+                      ) : (
+                        <div className="mb-4 p-4 border border-gray-200 rounded-lg bg-white space-y-3">
+                          <div>
+                            <label className="text-xs text-gray-500 block mb-1">Instruction</label>
+                            <input
+                              type="text"
+                              value={newInstruction}
+                              onChange={(e) => setNewInstruction(e.target.value)}
+                              placeholder="e.g., Focus on artists in Canada with 10k-100k followers"
+                              className="w-full text-sm px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                            />
+                          </div>
+                          <div>
+                            <label className="text-xs text-gray-500 block mb-1">Outreach Prompt Preset</label>
+                            <select
+                              value={instructionPromptId}
+                              onChange={(e) => {
+                                setInstructionPromptId(e.target.value);
+                              }}
+                              className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2 bg-white text-gray-700"
+                            >
+                              <option value="">No preset (use global/default)</option>
+                              {outreachPrompts.map((prompt) => (
+                                <option key={prompt.id} value={prompt.id}>{prompt.name}</option>
+                              ))}
+                            </select>
+                          </div>
+                          <div className="rounded-lg border border-gray-200 bg-gray-50/70 p-3">
+                            <div className="flex items-center justify-between mb-1.5">
+                              <label className="text-xs text-gray-500 block">
+                                {selectedInstructionPreset ? `Selected Preset: ${selectedInstructionPreset.name}` : 'Default Prompt (read-only)'}
+                              </label>
+                              <span className="text-[10px] uppercase tracking-wide text-gray-400">Reference</span>
+                            </div>
+                            <textarea
+                              value={selectedInstructionPreset?.content || defaultInstructionPrompt}
+                              readOnly
+                              rows={7}
+                              placeholder="Loading default prompt..."
+                              className="w-full text-xs font-mono border border-gray-200 rounded-lg p-3 bg-gray-100 text-gray-500 resize-y focus:outline-none"
+                            />
+                          </div>
+                          {!instructionOverrideOpen ? (
+                            <div>
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => {
+                                  setInstructionOverrideOpen(true);
+                                  setInstructionPromptDraft(selectedInstructionPreset?.content || defaultInstructionPrompt);
+                                }}
+                              >
+                                Add Custom Override
+                              </Button>
+                            </div>
                           ) : (
-                            <>Run now</>
+                            <div className="rounded-lg border border-indigo-200 bg-indigo-50/40 p-3">
+                              <div className="flex items-center justify-between mb-1.5">
+                                <label className="text-xs text-indigo-700 block">Custom Override (saved as new preset)</label>
+                                <span className="text-[10px] uppercase tracking-wide text-indigo-500">Active</span>
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  onClick={() => {
+                                    setInstructionOverrideOpen(false);
+                                    setInstructionPromptDraft('');
+                                  }}
+                                >
+                                  Close
+                                </Button>
+                              </div>
+                              <textarea
+                                value={instructionPromptDraft}
+                                onChange={(e) => setInstructionPromptDraft(e.target.value)}
+                                rows={8}
+                                placeholder="Edit your override prompt here..."
+                                className="w-full text-xs font-mono border border-indigo-200 rounded-lg p-3 bg-white text-gray-700 resize-y focus:outline-none focus:ring-1 focus:ring-indigo-300"
+                              />
+                            </div>
                           )}
-                        </Button>
-                      </div>
+                          <div className="flex gap-2">
+                            <Button
+                              variant="outline"
+                              onClick={() => addInstruction('queue')}
+                              disabled={addingInstruction || runningInstructionNow || savingOutreachPrompt || !newInstruction.trim()}
+                            >
+                              {(addingInstruction || savingOutreachPrompt) ? 'Adding...' : 'Queue'}
+                            </Button>
+                            <Button
+                              onClick={() => addInstruction('run_now')}
+                              disabled={addingInstruction || runningInstructionNow || savingOutreachPrompt || !newInstruction.trim()}
+                            >
+                              {runningInstructionNow ? (
+                                <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Running...</>
+                              ) : (
+                                <>Run now</>
+                              )}
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              onClick={() => {
+                                setInstructionComposerOpen(false);
+                                setNewInstruction('');
+                                setInstructionPromptId('');
+                                setInstructionPromptDraft('');
+                                setInstructionOverrideOpen(false);
+                              }}
+                            >
+                              Cancel
+                            </Button>
+                          </div>
+                        </div>
+                      )}
                       {instructions.length === 0 ? (
                         <div className="py-8 text-center border-2 border-dashed border-gray-200 rounded-lg">
                           <FileText className="h-8 w-8 mx-auto mb-3 text-gray-300" />
@@ -1033,6 +1308,9 @@ export function Dashboard({ userEmail }: DashboardProps) {
                             <div key={entry.id} className="flex items-start justify-between gap-3 p-3 bg-gray-50 rounded-lg group">
                               <div className="flex-1">
                                 <p className="text-sm text-gray-900">{entry.content}</p>
+                                {entry.outreach_prompts?.name && (
+                                  <p className="text-xs text-blue-600 mt-1">Prompt: {entry.outreach_prompts.name}</p>
+                                )}
                                 <p className="text-xs text-gray-400 mt-1">{new Date(entry.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}</p>
                               </div>
                               <button
@@ -1497,7 +1775,7 @@ export function Dashboard({ userEmail }: DashboardProps) {
                           {/* Email Prompt */}
                           <div className="px-4 py-3">
                             <div className="flex items-center justify-between mb-2">
-                              <span className="text-xs font-medium text-gray-700">Email Prompt</span>
+                              <span className="text-xs font-medium text-gray-700">Global Fallback Prompt</span>
                               <span className="text-xs text-gray-400">{company?.email_prompt ? 'Custom' : 'Default'}</span>
                             </div>
                             <textarea
@@ -1582,6 +1860,97 @@ export function Dashboard({ userEmail }: DashboardProps) {
                                 </Button>
                               )}
                             </div>
+                          </div>
+
+                          {/* Outreach Prompt Library */}
+                          <div className="px-4 py-3">
+                            <p className="text-xs font-medium text-gray-700 mb-2">Outreach Prompt Library</p>
+                            <div className="space-y-2 mb-3">
+                              <input
+                                type="text"
+                                value={newOutreachPromptName}
+                                onChange={(e) => setNewOutreachPromptName(e.target.value)}
+                                placeholder="Preset name"
+                                className="w-full text-sm px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-gray-300"
+                              />
+                              <textarea
+                                value={newOutreachPromptContent}
+                                onChange={(e) => setNewOutreachPromptContent(e.target.value)}
+                                rows={4}
+                                placeholder="Prompt preset content..."
+                                className="w-full text-xs font-mono px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-gray-300"
+                              />
+                              <div className="flex justify-end">
+                                <Button
+                                  size="sm"
+                                  onClick={createOutreachPromptPreset}
+                                  disabled={creatingLibraryPrompt || !newOutreachPromptName.trim() || !newOutreachPromptContent.trim()}
+                                >
+                                  {creatingLibraryPrompt ? 'Creating...' : 'Create Preset'}
+                                </Button>
+                              </div>
+                            </div>
+                            {outreachPrompts.length === 0 ? (
+                              <p className="text-xs text-gray-400">No outreach presets yet.</p>
+                            ) : (
+                              <div className="space-y-2">
+                                {outreachPrompts.map((prompt) => {
+                                  const draft = outreachPromptEdits[prompt.id] || { name: prompt.name, content: prompt.content };
+                                  return (
+                                    <div key={prompt.id} className="p-3 rounded-lg border border-gray-200 bg-gray-50">
+                                      <input
+                                        type="text"
+                                        value={draft.name}
+                                        onChange={(e) => setOutreachPromptEdits((prev) => ({
+                                          ...prev,
+                                          [prompt.id]: { ...draft, name: e.target.value },
+                                        }))}
+                                        className="w-full text-sm px-2 py-1.5 border border-gray-200 rounded mb-2 bg-white"
+                                      />
+                                      <textarea
+                                        value={draft.content}
+                                        onChange={(e) => setOutreachPromptEdits((prev) => ({
+                                          ...prev,
+                                          [prompt.id]: { ...draft, content: e.target.value },
+                                        }))}
+                                        rows={4}
+                                        className="w-full text-xs font-mono px-2 py-1.5 border border-gray-200 rounded bg-white"
+                                      />
+                                      <div className="flex items-center justify-between mt-2">
+                                        <Button
+                                          size="sm"
+                                          variant="outline"
+                                          onClick={() => {
+                                            setInstructionComposerOpen(true);
+                                            setInstructionPromptId(prompt.id);
+                                            setInstructionOverrideOpen(false);
+                                            setInstructionPromptDraft('');
+                                          }}
+                                        >
+                                          Use in Instruction
+                                        </Button>
+                                        <div className="flex gap-2">
+                                          <Button
+                                            size="sm"
+                                            onClick={() => saveOutreachPromptPreset(prompt.id)}
+                                            disabled={savingLibraryPromptId === prompt.id}
+                                          >
+                                            {savingLibraryPromptId === prompt.id ? 'Saving...' : 'Save'}
+                                          </Button>
+                                          <Button
+                                            size="sm"
+                                            variant="outline"
+                                            onClick={() => deleteOutreachPromptPreset(prompt.id)}
+                                          >
+                                            Delete
+                                          </Button>
+                                        </div>
+                                      </div>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            )}
                           </div>
                         </div>
                       )}

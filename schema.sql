@@ -24,12 +24,27 @@ create table companies (
 );
 
 -- ============================================================
+-- Outreach Prompts (reusable prompt presets)
+-- ============================================================
+create table outreach_prompts (
+  id uuid primary key default uuid_generate_v4(),
+  company_id uuid not null references companies(id) on delete cascade,
+  name text not null,
+  content text not null,
+  is_archived boolean not null default false,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+-- ============================================================
 -- Company Updates (instructions for query generation)
 -- ============================================================
 create table company_updates (
   id uuid primary key default uuid_generate_v4(),
   company_id uuid not null references companies(id) on delete cascade,
   content text not null,
+  outreach_prompt_id uuid references outreach_prompts(id) on delete set null,
+  outreach_prompt_snapshot text,
   query_generated boolean not null default false,
   created_at timestamptz not null default now()
 );
@@ -198,6 +213,7 @@ $$ language plpgsql;
 -- ============================================================
 alter table companies enable row level security;
 alter table company_updates enable row level security;
+alter table outreach_prompts enable row level security;
 alter table exa_queries enable row level security;
 alter table webset_runs enable row level security;
 alter table campaigns enable row level security;
@@ -212,6 +228,9 @@ create policy "Authenticated users can manage companies"
 
 create policy "Authenticated users can manage company_updates"
   on company_updates for all using (auth.role() = 'authenticated');
+
+create policy "Authenticated users can manage outreach_prompts"
+  on outreach_prompts for all using (auth.role() = 'authenticated');
 
 create policy "Authenticated users can manage exa_queries"
   on exa_queries for all using (auth.role() = 'authenticated');
