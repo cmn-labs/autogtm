@@ -254,17 +254,24 @@ export function Dashboard({ userEmail }: DashboardProps) {
     );
     if (!hasTransitional || !companyId) return;
 
+    const hasPendingCampaign = leads.some(l => l.campaign_status === 'pending');
     const interval = setInterval(async () => {
       try {
-        const res = await fetch(`/api/leads?company_id=${companyId}`);
-        if (res.ok) {
-          const data = await res.json();
+        const fetches: Promise<any>[] = [fetch(`/api/leads?company_id=${companyId}`)];
+        if (hasPendingCampaign) fetches.push(fetch(`/api/campaigns?company_id=${companyId}`));
+        const [leadsRes, campaignsRes] = await Promise.all(fetches);
+        if (leadsRes.ok) {
+          const data = await leadsRes.json();
           const freshLeads: Lead[] = data.leads || [];
           setLeads(freshLeads);
           if (selectedLead) {
             const updated = freshLeads.find((l: Lead) => l.id === selectedLead.id);
             if (updated) setSelectedLead(updated);
           }
+        }
+        if (campaignsRes?.ok) {
+          const data = await campaignsRes.json();
+          setCampaigns(data.campaigns || []);
         }
       } catch {}
     }, 3000);
@@ -601,11 +608,7 @@ export function Dashboard({ userEmail }: DashboardProps) {
 
   const regeneratePreviewEmails = async () => {
     if (!previewCampaign?.leadId || !previewCampaign.campaign?.id) return;
-    const feedback = regenerateFeedbackRef.current?.value?.trim() || '';
-    if (!feedback) {
-      toast({ variant: 'destructive', title: 'Feedback required', description: 'Tell AI what to improve before regenerating.' });
-      return;
-    }
+    const feedback = regenerateFeedbackRef.current?.value?.trim() || 'try again';
 
     setRegeneratingCampaignPreview(true);
     try {
@@ -2385,16 +2388,15 @@ export function Dashboard({ userEmail }: DashboardProps) {
                     </div>
                     {selectedLead.campaign_status !== 'routed' && (
                       <div className="p-4 border-t bg-white shrink-0">
-                        <div className="grid grid-cols-1 lg:grid-cols-3 gap-2">
-                          <Button onClick={savePreviewEmails} disabled={savingCampaignPreview} variant="outline">
+                        <div className="flex items-center gap-2">
+                          <Button variant="outline" size="icon" onClick={undoPreviewEmails} disabled={!undoAvailable || undoingCampaignPreview} title="Undo Last Save">
+                            <RotateCcw className="h-4 w-4" />
+                          </Button>
+                          <Button onClick={savePreviewEmails} disabled={savingCampaignPreview} variant="outline" className="flex-1">
                             <Save className="h-4 w-4 mr-2" />
                             Save Draft
                           </Button>
-                          <Button variant="outline" onClick={undoPreviewEmails} disabled={!undoAvailable || undoingCampaignPreview}>
-                            <RotateCcw className="h-4 w-4 mr-2" />
-                            Undo Last Save
-                          </Button>
-                          <Button onClick={createAndStartCampaignFromPreview} disabled={savingCampaignPreview || routingLeads.has(selectedLead.id)}>
+                          <Button onClick={createAndStartCampaignFromPreview} disabled={savingCampaignPreview || routingLeads.has(selectedLead.id)} className="flex-1">
                             <Send className="h-4 w-4 mr-2" />
                             Create and Start
                           </Button>
