@@ -64,10 +64,13 @@ export async function createCampaign(params: CreateCampaignParams): Promise<Inst
   };
 
   // Build sequences in Instantly V2 format (each step needs variants array)
+  // API: step.delay = days to wait before sending the NEXT email after this one
+  const steps = params.sequences;
   const sequences = [{
-    steps: params.sequences.map((step, index) => ({
+    steps: steps.map((step, index) => ({
       type: 'email',
-      delay: index === 0 ? 0 : (step.delay || 2) * 24 * 60, // Convert days to minutes
+      delay: index < steps.length - 1 ? (steps[index + 1].delay || 2) : 0,
+      delay_unit: 'days',
       variants: [{
         subject: step.subject,
         body: step.body,

@@ -92,6 +92,11 @@ Hard rules:
 - Do not fabricate specific content titles, episodes, or posts
 - Do not mention ARR, fundraising, valuation, or internal finance metrics
 
+Subject line rules:
+- Initial email subject must mention the company/product name naturally (e.g. "Quick idea for your actors - Castmenow")
+- Keep subjects under 50 characters, lowercase feel, no clickbait
+- Follow-up subjects must be ""
+
 Sequence expectations:
 - Initial email: around 120 to 180 words, clear opener + founder intro + plain-English product explanation + one concise proof block + soft partnership CTA
 - Do not include calendar link in initial email unless explicitly requested by product context
@@ -105,10 +110,14 @@ Personalization guidance:
 - Preferred opener pattern:
   - Start: Hey {{firstName}}, (or Hey {{firstName}}! when it feels natural)
   - Then a natural line such as "Came across your work around..." or "Saw your work in..."
-  - Keep the first 2 lines conversational before pitching
+  - The opener paragraph must be ONE sentence only. End it there.
+  - Do NOT add a second sentence that bridges their work to the product (e.g. "Your X feels like it would map well to Y"). That belongs in the product paragraph, not the opener.
 
 Tone and close:
 - Keep the final ask low-pressure and friendly
+- The CTA must hint at a concrete outcome like a collab or partnership, not just "chat" or "send over time"
+- Good: "Would love to explore a partnership if there's a fit." or "I'd love to explore a collab that works for both of us."
+- Bad: "Let me know and I can send over some time to chat." (too vague, no clear outcome)
 - Avoid menu-like "options include..." phrasing unless needed
 - Close naturally with sender name, no template-y language.`;
 

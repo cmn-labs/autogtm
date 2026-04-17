@@ -143,9 +143,12 @@ export async function sendDraftCampaignForLead(params: {
     delay: index === 0 ? 0 : email.delay_days,
   }));
 
+  const resolvedEmailList = fallbackCompanySendingEmails.length ? fallbackCompanySendingEmails : [process.env.INSTANTLY_SENDER_EMAIL || ''];
+  console.log('[sendDraft] emailList being sent to Instantly:', JSON.stringify(resolvedEmailList));
+
   const instantlyCampaign = await createInstantlyCampaign({
     name: campaign.name,
-    emailList: fallbackCompanySendingEmails.length ? fallbackCompanySendingEmails : [process.env.INSTANTLY_SENDER_EMAIL || ''],
+    emailList: resolvedEmailList,
     sequences,
   });
 
