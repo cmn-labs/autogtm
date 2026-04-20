@@ -36,6 +36,17 @@ export async function POST(
         return NextResponse.json({ error: 'Invalid basePromptId' }, { status: 400 });
       }
       basePrompt = prompt.content;
+    } else {
+      // Prefer the company's tuned email_prompt (founder name, signature, structure)
+      // over the generic DEFAULT_EMAIL_PROMPT. Falls back to default if unset.
+      const { data: company } = await supabase
+        .from('companies')
+        .select('email_prompt')
+        .eq('id', companyId)
+        .single();
+      if (company?.email_prompt?.trim()) {
+        basePrompt = company.email_prompt;
+      }
     }
 
     const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY! });

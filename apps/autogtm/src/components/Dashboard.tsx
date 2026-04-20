@@ -30,6 +30,7 @@ import {
   Power,
   RotateCcw,
   Save,
+  ArrowDownWideNarrow,
 } from 'lucide-react';
 
 interface DashboardProps {
@@ -187,6 +188,8 @@ export function Dashboard({ userEmail }: DashboardProps) {
   const [sendingAccountsOpen, setSendingAccountsOpen] = useState(false);
   const [expandedCampaign, setExpandedCampaign] = useState<string | null>(null);
   const [leadFilter, setLeadFilter] = useState<'all' | 'suggested' | 'routed' | 'pending' | 'skipped'>('all');
+  const [leadSearch, setLeadSearch] = useState('');
+  const [leadSort, setLeadSort] = useState<'default' | 'score'>('default');
   const [previewCampaign, setPreviewCampaign] = useState<{ campaign: Campaign; emails: CampaignEmail[]; leadId?: string } | null>(null);
   const [loadingCampaignPreview, setLoadingCampaignPreview] = useState(false);
   const [savingCampaignPreview, setSavingCampaignPreview] = useState(false);
@@ -676,9 +679,23 @@ export function Dashboard({ userEmail }: DashboardProps) {
   };
 
   // Filter leads by selected query
-  const filteredLeads = selectedQueryFilter === 'all'
+  const byQuery = selectedQueryFilter === 'all'
     ? leads
     : leads.filter(l => l.query_id === selectedQueryFilter);
+  const searchTerm = leadSearch.trim().toLowerCase();
+  const filteredLeads = searchTerm
+    ? byQuery.filter(l => {
+        const haystack = [
+          l.name, l.full_name, l.title, l.email, l.url, l.platform,
+          l.category, l.bio, l.promotion_fit_reason, l.suggested_campaign_reason, l.skip_reason,
+          l.exa_queries?.query, l.exa_queries?.instruction_content,
+          ...(l.expertise || []),
+          ...(l.content_types || []),
+          ...Object.values(l.social_links || {}),
+        ].filter(Boolean).join(' ').toLowerCase();
+        return haystack.includes(searchTerm);
+      })
+    : byQuery;
   const selectedInstructionPreset = instructionPromptId
     ? outreachPrompts.find((prompt) => prompt.id === instructionPromptId) || null
     : null;
@@ -1487,10 +1504,13 @@ export function Dashboard({ userEmail }: DashboardProps) {
                       l.campaign_status === 'skipped' ? 4 : 2;
                     return order(a) - order(b);
                   });
-                  const displayLeads = leadFilter === 'all' ? sortedAll :
+                  const baseDisplay = leadFilter === 'all' ? sortedAll :
                     leadFilter === 'suggested' ? suggestedLeads :
                     leadFilter === 'routed' ? routedLeads :
                     leadFilter === 'skipped' ? skippedLeads : pendingLeads;
+                  const displayLeads = leadSort === 'score'
+                    ? [...baseDisplay].sort((a, b) => (b.promotion_fit_score ?? -1) - (a.promotion_fit_score ?? -1))
+                    : baseDisplay;
 
                   return (
                     <div>
@@ -1522,23 +1542,56 @@ export function Dashboard({ userEmail }: DashboardProps) {
                           </div>
 
                         </div>
-                        {queries.length > 0 && (
-                          <select
-                            value={selectedQueryFilter}
-                            onChange={(e) => setSelectedQueryFilter(e.target.value)}
-                            className="text-xs border border-gray-200 rounded-lg px-2 py-1.5 bg-white text-gray-700"
+                        <div className="flex items-center gap-2">
+                          <div className="relative">
+                            <Search className="h-3.5 w-3.5 text-gray-400 absolute left-2 top-1/2 -translate-y-1/2 pointer-events-none" />
+                            <input
+                              type="text"
+                              value={leadSearch}
+                              onChange={(e) => setLeadSearch(e.target.value)}
+                              placeholder="Search name, bio, category..."
+                              className="text-xs border border-gray-200 rounded-lg pl-7 pr-7 py-1.5 bg-white text-gray-700 w-56 focus:outline-none focus:ring-1 focus:ring-gray-300"
+                            />
+                            {leadSearch && (
+                              <button
+                                onClick={() => setLeadSearch('')}
+                                className="absolute right-1.5 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                                aria-label="Clear search"
+                              >
+                                <X className="h-3.5 w-3.5" />
+                              </button>
+                            )}
+                          </div>
+                          <button
+                            onClick={() => setLeadSort(leadSort === 'score' ? 'default' : 'score')}
+                            title={leadSort === 'score' ? 'Sorted by fit score (click to reset)' : 'Sort by fit score (high to low)'}
+                            aria-label="Sort by fit score"
+                            className={`p-1.5 rounded-lg border transition-colors ${
+                              leadSort === 'score'
+                                ? 'border-gray-900 bg-gray-900 text-white hover:bg-gray-800'
+                                : 'border-gray-200 bg-white text-gray-500 hover:text-gray-900 hover:bg-gray-50'
+                            }`}
                           >
-                            <option value="all">All Searches ({leads.length})</option>
-                            {queries.map((q) => {
-                              const count = leads.filter(l => l.query_id === q.id).length;
-                              return (
-                                <option key={q.id} value={q.id}>
-                                  {q.query.slice(0, 30)}{q.query.length > 30 ? '...' : ''} ({count})
-                                </option>
-                              );
-                            })}
-                          </select>
-                        )}
+                            <ArrowDownWideNarrow className="h-3.5 w-3.5" />
+                          </button>
+                          {queries.length > 0 && (
+                            <select
+                              value={selectedQueryFilter}
+                              onChange={(e) => setSelectedQueryFilter(e.target.value)}
+                              className="text-xs border border-gray-200 rounded-lg px-2 py-1.5 bg-white text-gray-700"
+                            >
+                              <option value="all">All Searches ({leads.length})</option>
+                              {queries.map((q) => {
+                                const count = leads.filter(l => l.query_id === q.id).length;
+                                return (
+                                  <option key={q.id} value={q.id}>
+                                    {q.query.slice(0, 30)}{q.query.length > 30 ? '...' : ''} ({count})
+                                  </option>
+                                );
+                              })}
+                            </select>
+                          )}
+                        </div>
                       </div>
 
                       {displayLeads.length === 0 ? (
