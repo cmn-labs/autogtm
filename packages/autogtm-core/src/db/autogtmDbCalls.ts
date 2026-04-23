@@ -631,60 +631,78 @@ export async function listAutoEnabledCompanies(): Promise<Array<Pick<Company,
 }
 
 /**
+ * Return the set of campaign ids belonging to a company. Used to server-side
+ * filter the `leads` table by company (leads have no direct company_id column —
+ * they're attached to a company only through their suggested/routed campaign).
+ */
+async function getCompanyCampaignIds(companyId: string): Promise<string[]> {
+  const supabase = getSupabaseClient();
+  const { data, error } = await supabase
+    .from('campaigns')
+    .select('id')
+    .eq('company_id', companyId);
+  if (error) throw error;
+  return (data || []).map((r: { id: string }) => r.id);
+}
+
+/**
  * Fetch up to `limit` leads eligible for auto-add, sorted by fit score desc then recency.
- * A lead is eligible when it has a suggested campaign, valid email + name,
- * a fit score at or above the configured threshold, and is not yet routed/skipped.
+ * A lead is eligible when it has a suggested campaign belonging to this company,
+ * a valid email + name, a fit score at or above the configured threshold, and is
+ * not yet routed/skipped.
+ *
+ * Two small queries beat one big one here: campaign ids first (indexed on company_id),
+ * then `leads` filtered by `suggested_campaign_id IN (...)` — all filtering server-side,
+ * no over-fetch, result count == `limit` at most.
  */
 export async function getEligibleLeadsForAutoAdd(
   companyId: string,
   minFitScore: number,
   limit: number
 ): Promise<AutoAddEligibleLead[]> {
+  const campaignIds = await getCompanyCampaignIds(companyId);
+  if (campaignIds.length === 0) return [];
+
   const supabase = getSupabaseClient();
-  // Narrow by company_id via the suggested campaign's company (leads table has no direct company_id).
-  // Pull candidate leads with a suggested campaign and filter at the DB level as much as possible.
   const { data, error } = await supabase
     .from('leads')
-    .select(`
-      id, email, full_name, promotion_fit_score, suggested_campaign_id,
-      category, bio, suggested_campaign_reason,
-      campaigns:suggested_campaign_id ( company_id )
-    `)
-    .not('suggested_campaign_id', 'is', null)
+    .select('id, email, full_name, promotion_fit_score, suggested_campaign_id, category, bio, suggested_campaign_reason')
+    .in('suggested_campaign_id', campaignIds)
     .neq('campaign_status', 'routed')
     .neq('campaign_status', 'skipped')
     .gte('promotion_fit_score', minFitScore)
     .not('email', 'is', null)
+    .neq('email', '')
     .not('full_name', 'is', null)
+    .neq('full_name', '')
     .order('promotion_fit_score', { ascending: false })
     .order('created_at', { ascending: false })
-    .limit(limit * 4); // over-fetch for client-side company filter then cap
-
+    .limit(limit);
   if (error) throw error;
-
-  const rows = (data || []) as unknown as Array<AutoAddEligibleLead & { campaigns?: { company_id: string } | null }>;
-  return rows
-    .filter((r) => r.campaigns?.company_id === companyId)
-    .filter((r) => r.email?.trim() && r.full_name?.trim())
-    .slice(0, limit)
-    .map(({ campaigns: _c, ...rest }) => rest);
+  // Defensive: reject whitespace-only email/name that slipped past server filters.
+  return ((data || []) as AutoAddEligibleLead[])
+    .filter((r) => r.email?.trim() && r.full_name?.trim());
 }
 
 /** Count of remaining Ready-to-Add leads at or above a fit threshold, used in digest footer. */
 export async function countReadyToAddLeads(companyId: string, minFitScore: number): Promise<number> {
+  const campaignIds = await getCompanyCampaignIds(companyId);
+  if (campaignIds.length === 0) return 0;
+
   const supabase = getSupabaseClient();
-  const { data, error } = await supabase
+  const { count, error } = await supabase
     .from('leads')
-    .select('id, campaigns:suggested_campaign_id ( company_id )')
-    .not('suggested_campaign_id', 'is', null)
+    .select('id', { count: 'exact', head: true })
+    .in('suggested_campaign_id', campaignIds)
     .neq('campaign_status', 'routed')
     .neq('campaign_status', 'skipped')
     .gte('promotion_fit_score', minFitScore)
     .not('email', 'is', null)
-    .not('full_name', 'is', null);
+    .neq('email', '')
+    .not('full_name', 'is', null)
+    .neq('full_name', '');
   if (error) throw error;
-  const rows = (data || []) as unknown as Array<{ campaigns?: { company_id: string } | null }>;
-  return rows.filter((r) => r.campaigns?.company_id === companyId).length;
+  return count || 0;
 }
 
 export async function createAutoAddRun(params: {

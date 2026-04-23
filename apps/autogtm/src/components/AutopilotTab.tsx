@@ -37,11 +37,19 @@ interface AutopilotTabProps {
 	onCompanyUpdated: (updates: Partial<AutopilotCompany>) => void;
 }
 
+// Formats a UTC hour in America/New_York local time, correctly respecting DST
+// so we display "10:00 AM EDT" in summer and "9:00 AM EST" in winter (the cron
+// runs at fixed 14:00 UTC, which maps to different ET wall-clock times by season).
 const HOUR_LABEL_ET = (hourUtc: number) => {
-	const etHour = ((hourUtc - 4) + 24) % 24;
-	const ampm = etHour >= 12 ? 'PM' : 'AM';
-	const h12 = etHour % 12 === 0 ? 12 : etHour % 12;
-	return `${h12}:00 ${ampm} ET`;
+	const d = new Date();
+	d.setUTCHours(hourUtc, 0, 0, 0);
+	return new Intl.DateTimeFormat('en-US', {
+		timeZone: 'America/New_York',
+		hour: 'numeric',
+		minute: '2-digit',
+		hour12: true,
+		timeZoneName: 'short',
+	}).format(d);
 };
 
 /**
