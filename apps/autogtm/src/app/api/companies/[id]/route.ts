@@ -56,6 +56,10 @@ export async function PATCH(
     if (body.email_prompt !== undefined) updateData.email_prompt = body.email_prompt;
     if (body.auto_add_enabled !== undefined) updateData.auto_add_enabled = body.auto_add_enabled;
     if (body.auto_add_min_fit_score !== undefined) updateData.auto_add_min_fit_score = body.auto_add_min_fit_score;
+    if (body.auto_add_daily_limit !== undefined) updateData.auto_add_daily_limit = body.auto_add_daily_limit;
+    if (body.auto_add_run_hour_utc !== undefined) updateData.auto_add_run_hour_utc = body.auto_add_run_hour_utc;
+    if (body.auto_add_digest_email !== undefined) updateData.auto_add_digest_email = body.auto_add_digest_email;
+    if (body.auto_add_regenerate_drafts !== undefined) updateData.auto_add_regenerate_drafts = body.auto_add_regenerate_drafts;
     if (body.system_enabled !== undefined) updateData.system_enabled = body.system_enabled;
 
     const { data: company, error } = await supabase

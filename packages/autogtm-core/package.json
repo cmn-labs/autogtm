@@ -12,6 +12,7 @@
     "./ai/determineCampaign": "./src/ai/determineCampaign.ts",
     "./ai/extractEmail": "./src/ai/extractEmail.ts",
     "./campaigns/createCampaignForPersona": "./src/campaigns/createCampaignForPersona.ts",
+    "./campaigns/addLeadToCampaign": "./src/campaigns/addLeadToCampaign.ts",
     "./db/autogtmDbCalls": "./src/db/autogtmDbCalls.ts",
     "./types": "./src/types/index.ts"
   },

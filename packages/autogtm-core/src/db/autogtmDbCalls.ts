@@ -14,6 +14,8 @@ import type {
   CampaignEmail,
   DailyDigest,
   AllowedUser,
+  AutoAddRun,
+  AutoAddRunBreakdownEntry,
 } from '../types';
 import { getCampaignAnalytics } from '../clients/instantly';
 
@@ -595,4 +597,165 @@ export async function getCompanyStats(companyId: string): Promise<{
     totalOpens,
     totalReplies,
   };
+}
+
+// ============ Auto Add Sweep (Autopilot) ============
+
+/** Leads that qualify for the daily auto-add sweep for a given company. */
+export interface AutoAddEligibleLead {
+  id: string;
+  email: string;
+  full_name: string;
+  promotion_fit_score: number;
+  suggested_campaign_id: string;
+  category: string | null;
+  bio: string | null;
+  suggested_campaign_reason: string | null;
+}
+
+/** All companies with autopilot enabled AND the master system enabled, returning
+ *  only fields needed by the sweep. Gating on both makes Autopilot a strict
+ *  subset of System — turning System off guarantees the sweep is a no-op. */
+export async function listAutoEnabledCompanies(): Promise<Array<Pick<Company,
+  | 'id' | 'name' | 'auto_add_enabled' | 'auto_add_min_fit_score'
+  | 'auto_add_daily_limit' | 'auto_add_run_hour_utc' | 'auto_add_digest_email'
+>>> {
+  const supabase = getSupabaseClient();
+  const { data, error } = await supabase
+    .from('companies')
+    .select('id, name, auto_add_enabled, auto_add_min_fit_score, auto_add_daily_limit, auto_add_run_hour_utc, auto_add_digest_email')
+    .eq('auto_add_enabled', true)
+    .eq('system_enabled', true);
+  if (error) throw error;
+  return data || [];
+}
+
+/**
+ * Return the set of campaign ids belonging to a company. Used to server-side
+ * filter the `leads` table by company (leads have no direct company_id column —
+ * they're attached to a company only through their suggested/routed campaign).
+ */
+async function getCompanyCampaignIds(companyId: string): Promise<string[]> {
+  const supabase = getSupabaseClient();
+  const { data, error } = await supabase
+    .from('campaigns')
+    .select('id')
+    .eq('company_id', companyId);
+  if (error) throw error;
+  return (data || []).map((r: { id: string }) => r.id);
+}
+
+/**
+ * Fetch up to `limit` leads eligible for auto-add, sorted by fit score desc then recency.
+ * A lead is eligible when it has a suggested campaign belonging to this company,
+ * a valid email + name, a fit score at or above the configured threshold, and is
+ * not yet routed/skipped.
+ *
+ * Two small queries beat one big one here: campaign ids first (indexed on company_id),
+ * then `leads` filtered by `suggested_campaign_id IN (...)` — all filtering server-side,
+ * no over-fetch, result count == `limit` at most.
+ */
+export async function getEligibleLeadsForAutoAdd(
+  companyId: string,
+  minFitScore: number,
+  limit: number
+): Promise<AutoAddEligibleLead[]> {
+  const campaignIds = await getCompanyCampaignIds(companyId);
+  if (campaignIds.length === 0) return [];
+
+  const supabase = getSupabaseClient();
+  const { data, error } = await supabase
+    .from('leads')
+    .select('id, email, full_name, promotion_fit_score, suggested_campaign_id, category, bio, suggested_campaign_reason')
+    .in('suggested_campaign_id', campaignIds)
+    .neq('campaign_status', 'routed')
+    .neq('campaign_status', 'skipped')
+    .gte('promotion_fit_score', minFitScore)
+    .not('email', 'is', null)
+    .neq('email', '')
+    .not('full_name', 'is', null)
+    .neq('full_name', '')
+    .order('promotion_fit_score', { ascending: false })
+    .order('created_at', { ascending: false })
+    .limit(limit);
+  if (error) throw error;
+  // Defensive: reject whitespace-only email/name that slipped past server filters.
+  return ((data || []) as AutoAddEligibleLead[])
+    .filter((r) => r.email?.trim() && r.full_name?.trim());
+}
+
+/** Count of remaining Ready-to-Add leads at or above a fit threshold, used in digest footer. */
+export async function countReadyToAddLeads(companyId: string, minFitScore: number): Promise<number> {
+  const campaignIds = await getCompanyCampaignIds(companyId);
+  if (campaignIds.length === 0) return 0;
+
+  const supabase = getSupabaseClient();
+  const { count, error } = await supabase
+    .from('leads')
+    .select('id', { count: 'exact', head: true })
+    .in('suggested_campaign_id', campaignIds)
+    .neq('campaign_status', 'routed')
+    .neq('campaign_status', 'skipped')
+    .gte('promotion_fit_score', minFitScore)
+    .not('email', 'is', null)
+    .neq('email', '')
+    .not('full_name', 'is', null)
+    .neq('full_name', '');
+  if (error) throw error;
+  return count || 0;
+}
+
+export async function createAutoAddRun(params: {
+  companyId: string;
+  minFitScore: number;
+  dailyLimit: number;
+  trigger: 'cron' | 'manual';
+}): Promise<AutoAddRun> {
+  const supabase = getSupabaseClient();
+  const { data, error } = await supabase
+    .from('auto_add_runs')
+    .insert({
+      company_id: params.companyId,
+      min_fit_score: params.minFitScore,
+      daily_limit: params.dailyLimit,
+      trigger: params.trigger,
+    })
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+export async function completeAutoAddRun(
+  runId: string,
+  updates: {
+    leads_considered?: number;
+    leads_added?: number;
+    leads_skipped?: number;
+    breakdown?: AutoAddRunBreakdownEntry[];
+    added_lead_ids?: string[];
+    skip_reasons?: Record<string, number>;
+    digest_sent?: boolean;
+    digest_error?: string | null;
+    error?: string | null;
+  }
+): Promise<void> {
+  const supabase = getSupabaseClient();
+  const { error } = await supabase
+    .from('auto_add_runs')
+    .update({ ...updates, run_completed_at: new Date().toISOString() })
+    .eq('id', runId);
+  if (error) throw error;
+}
+
+export async function getRecentAutoAddRuns(companyId: string, limit = 10): Promise<AutoAddRun[]> {
+  const supabase = getSupabaseClient();
+  const { data, error } = await supabase
+    .from('auto_add_runs')
+    .select()
+    .eq('company_id', companyId)
+    .order('run_started_at', { ascending: false })
+    .limit(limit);
+  if (error) throw error;
+  return data || [];
 }

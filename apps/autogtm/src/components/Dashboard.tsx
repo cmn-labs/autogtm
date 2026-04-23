@@ -32,6 +32,7 @@ import {
   Save,
   ArrowDownWideNarrow,
 } from 'lucide-react';
+import { AutopilotTab } from '@/components/AutopilotTab';
 
 interface DashboardProps {
   userEmail: string;
@@ -139,6 +140,10 @@ interface Company {
   email_prompt: string | null;
   auto_add_enabled: boolean;
   auto_add_min_fit_score: number;
+  auto_add_daily_limit?: number;
+  auto_add_run_hour_utc?: number;
+  auto_add_digest_email?: string | null;
+  auto_add_regenerate_drafts?: boolean;
   system_enabled: boolean;
 }
 
@@ -148,7 +153,7 @@ interface InstantlyAccount {
   warmup_status: number; // 0=Paused, 1=Active, -1=Banned
 }
 
-type Tab = 'context' | 'searches' | 'leads' | 'campaigns';
+type Tab = 'context' | 'searches' | 'leads' | 'campaigns' | 'autopilot';
 
 export function Dashboard({ userEmail }: DashboardProps) {
   const { toast } = useToast();
@@ -186,7 +191,6 @@ export function Dashboard({ userEmail }: DashboardProps) {
   const [instantlyAccounts, setInstantlyAccounts] = useState<InstantlyAccount[]>([]);
   const [savingSendingEmails, setSavingSendingEmails] = useState(false);
   const [sendingAccountsOpen, setSendingAccountsOpen] = useState(false);
-  const [expandedCampaign, setExpandedCampaign] = useState<string | null>(null);
   const [leadFilter, setLeadFilter] = useState<'all' | 'suggested' | 'routed' | 'pending' | 'skipped'>('all');
   const [leadSearch, setLeadSearch] = useState('');
   const [leadSort, setLeadSort] = useState<'default' | 'score'>('default');
@@ -967,11 +971,12 @@ export function Dashboard({ userEmail }: DashboardProps) {
     }
   };
 
-  const tabs = [
-    { id: 'context' as Tab, label: 'Context', count: instructions.length, icon: FileText },
-    { id: 'searches' as Tab, label: 'Searches', count: stats.queries, icon: Search },
-    { id: 'leads' as Tab, label: 'Leads', count: stats.leads, icon: Users },
-    { id: 'campaigns' as Tab, label: 'Campaigns', count: liveCampaigns.length, icon: Send },
+  const tabs: Array<{ id: Tab; label: string; count?: number; icon: typeof FileText; showBlip?: boolean }> = [
+    { id: 'context', label: 'Context', count: instructions.length, icon: FileText },
+    { id: 'searches', label: 'Searches', count: stats.queries, icon: Search },
+    { id: 'leads', label: 'Leads', count: stats.leads, icon: Users },
+    { id: 'campaigns', label: 'Campaigns', count: liveCampaigns.length, icon: Send },
+    { id: 'autopilot', label: 'Autopilot', icon: Zap, showBlip: !!company?.auto_add_enabled },
   ];
 
   return (
@@ -988,88 +993,55 @@ export function Dashboard({ userEmail }: DashboardProps) {
                 onClick={() => setActiveTab(tab.id)}
                 className={`flex items-center gap-2 px-6 py-4 text-sm font-medium border-b-2 transition-colors ${
                   activeTab === tab.id
-                    ? 'border-indigo-600 text-gray-900'
-                    : 'border-transparent text-gray-500 hover:text-gray-700'
+                    ? `border-indigo-600 ${tab.showBlip ? 'text-green-700' : 'text-gray-900'}`
+                    : tab.showBlip
+                      ? 'border-transparent text-green-700 hover:text-green-800'
+                      : 'border-transparent text-gray-500 hover:text-gray-700'
                 }`}
+                title={tab.showBlip ? 'Autopilot is on' : undefined}
               >
-                <tab.icon className="h-4 w-4" />
+                <tab.icon className={`h-4 w-4 ${tab.showBlip ? 'text-green-600' : ''}`} />
                 {tab.label}
-                <span className={`ml-1 px-2 py-0.5 rounded-full text-xs ${
-                  activeTab === tab.id ? 'bg-gray-900 text-white' : 'bg-gray-100 text-gray-600'
-                }`}>
-                  {loading ? ' ' : tab.count}
-                </span>
+                {tab.count !== undefined && (
+                  <span className={`ml-1 px-2 py-0.5 rounded-full text-xs ${
+                    activeTab === tab.id ? 'bg-gray-900 text-white' : 'bg-gray-100 text-gray-600'
+                  }`}>
+                    {loading ? ' ' : tab.count}
+                  </span>
+                )}
               </button>
             ))}
             <div className="ml-auto pr-4 flex items-center gap-3">
-              <div className="inline-flex items-center gap-2 px-2.5 py-1.5 rounded-md border border-gray-200 bg-white">
-                <span className="text-xs font-semibold text-gray-600">AUTO</span>
-                <button
-                  role="switch"
-                  aria-checked={company?.auto_add_enabled ? 'true' : 'false'}
-                  onClick={async () => {
-                    if (!company || !companyId) return;
-                    const newVal = !company.auto_add_enabled;
-                    if (newVal) {
-                      const msg = `Turn Autopilot ON? Leads with fit score ${company.auto_add_min_fit_score || 7}+ will be automatically added to campaigns.`;
-                      if (!confirm(msg)) return;
-                    }
-                    try {
-                      const res = await fetch(`/api/companies/${companyId}`, {
-                        method: 'PATCH',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ auto_add_enabled: newVal }),
-                      });
-                      if (res.ok) {
-                        setCompany({ ...company, auto_add_enabled: newVal });
-                        toast({
-                          title: newVal ? 'Autopilot ON' : 'Autopilot OFF',
-                          description: newVal
-                            ? `Leads with fit score ${company.auto_add_min_fit_score || 7}+ will be auto-added to campaigns.`
-                            : 'Manual review mode enabled.',
-                        });
-                      }
-                    } catch {}
-                  }}
-                  disabled={!company}
-                  className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${
-                    !company
-                      ? 'bg-gray-200 cursor-not-allowed'
-                      : company.auto_add_enabled
-                        ? 'bg-amber-500'
-                        : 'bg-gray-300'
-                  }`}
-                  title={company?.auto_add_enabled
-                    ? `Autopilot is ON (fit ${company?.auto_add_min_fit_score || 7}+)`
-                    : 'Autopilot is OFF'}
-                >
-                  <span
-                    className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
-                      company?.auto_add_enabled ? 'translate-x-4' : 'translate-x-0.5'
-                    }`}
-                  />
-                </button>
-                <span className={`text-xs font-medium ${company?.auto_add_enabled ? 'text-amber-700' : 'text-gray-500'}`}>
-                  {company?.auto_add_enabled ? 'On' : 'Off'}
-                </span>
-              </div>
               <button
                 onClick={async () => {
                   if (!company || !companyId) return;
                   const newVal = !company.system_enabled;
+                  const autopilotWasOn = !!company.auto_add_enabled;
                   const msg = newVal
                     ? 'Turn the system ON? This will enable daily searches, lead enrichment, and campaign creation.'
-                    : 'Turn the system OFF? All automated processes (searches, enrichment, campaign routing) will stop.';
+                    : autopilotWasOn
+                      ? 'Turn the system OFF? All automated processes (searches, enrichment, campaign routing) will stop, and Autopilot will be paused too.'
+                      : 'Turn the system OFF? All automated processes (searches, enrichment, campaign routing) will stop.';
                   if (!confirm(msg)) return;
                   try {
+                    const patchBody: Record<string, unknown> = { system_enabled: newVal };
+                    // Cascade: turning system OFF forces Autopilot OFF so it can't run out of sync.
+                    if (!newVal && autopilotWasOn) patchBody.auto_add_enabled = false;
                     const res = await fetch(`/api/companies/${companyId}`, {
                       method: 'PATCH',
                       headers: { 'Content-Type': 'application/json' },
-                      body: JSON.stringify({ system_enabled: newVal }),
+                      body: JSON.stringify(patchBody),
                     });
                     if (res.ok) {
-                      setCompany({ ...company, system_enabled: newVal });
-                      toast({ title: newVal ? 'System turned ON' : 'System turned OFF', description: newVal ? 'Automated searches, enrichment, and campaigns are now active.' : 'All automated processes have been paused.' });
+                      setCompany({ ...company, system_enabled: newVal, ...(!newVal && autopilotWasOn ? { auto_add_enabled: false } : {}) });
+                      toast({
+                        title: newVal ? 'System turned ON' : 'System turned OFF',
+                        description: newVal
+                          ? 'Automated searches, enrichment, and campaigns are now active.'
+                          : autopilotWasOn
+                            ? 'All automated processes paused. Autopilot turned off.'
+                            : 'All automated processes have been paused.',
+                      });
                     }
                   } catch {}
                 }}
@@ -1096,7 +1068,7 @@ export function Dashboard({ userEmail }: DashboardProps) {
                 className="inline-flex items-center gap-1.5 text-xs text-gray-400 hover:text-gray-600 transition-colors"
               >
                 <HelpCircle className="h-3.5 w-3.5" />
-                How it works
+                Guide
               </button>
             </div>
           </div>
@@ -1191,8 +1163,8 @@ export function Dashboard({ userEmail }: DashboardProps) {
                     {/* Instructions Section */}
                     <div>
                       <div className="flex items-center justify-between mb-3">
-                        <span className="font-medium text-gray-900">Instructions</span>
-                        <span className="text-xs text-gray-400">Tell the AI what kind of leads to find</span>
+                        <span className="font-medium text-gray-900">Lead Briefs</span>
+                        <span className="text-xs text-gray-400">Pinpoint a specific kind of lead you want the AI to go find</span>
                       </div>
                       {!instructionComposerOpen ? (
                         <div className="mb-4">
@@ -1200,7 +1172,7 @@ export function Dashboard({ userEmail }: DashboardProps) {
                             variant="outline"
                             onClick={() => setInstructionComposerOpen(true)}
                           >
-                            Add Instruction
+                            Add Brief
                           </Button>
                         </div>
                       ) : (
@@ -2020,7 +1992,6 @@ export function Dashboard({ userEmail }: DashboardProps) {
                     ) : (
                       <div className="space-y-3">
                         {liveCampaigns.map((campaign) => {
-                          const isExpanded = expandedCampaign === campaign.id;
                           const matchedLeads = leads.filter((l: any) => l.campaign_id === campaign.id);
 
                           return (
@@ -2112,43 +2083,37 @@ export function Dashboard({ userEmail }: DashboardProps) {
                                 </div>
                               </div>
 
-                              {/* Leads in campaign - expandable */}
+                              {/* Leads in campaign — always visible */}
                               {matchedLeads.length > 0 && (
                                 <>
-                                  <button
-                                    onClick={() => setExpandedCampaign(isExpanded ? null : campaign.id)}
-                                    className="w-full flex items-center gap-2 px-4 py-2 border-t text-sm text-gray-600 hover:bg-gray-50 transition-colors"
-                                  >
-                                    {isExpanded ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+                                  <div className="px-4 py-2 border-t text-xs font-medium text-gray-500 uppercase tracking-wider">
                                     {matchedLeads.length} lead{matchedLeads.length !== 1 ? 's' : ''} in this campaign
-                                  </button>
-                                  {isExpanded && (
-                                    <div className="border-t divide-y">
-                                      {matchedLeads.map((lead) => (
-                                        <div
-                                          key={lead.id}
-                                          className="px-4 py-2 flex items-center justify-between hover:bg-gray-50 cursor-pointer"
-                                          onClick={() => setSelectedLead(lead)}
-                                        >
-                                          <div className="min-w-0">
-                                            <p className="text-sm font-medium text-gray-900 truncate">{lead.full_name || lead.name || 'Unknown'}</p>
-                                            <p className="text-xs text-gray-500 truncate">{lead.email}</p>
-                                          </div>
-                                          <div className="flex items-center gap-3 shrink-0 text-xs text-gray-500">
-                                            {lead.platform && <span>{lead.platform}</span>}
-                                            {lead.promotion_fit_score && (
-                                              <span className={`font-medium ${
-                                                lead.promotion_fit_score >= 7 ? 'text-green-600' :
-                                                lead.promotion_fit_score >= 4 ? 'text-yellow-600' : 'text-red-500'
-                                              }`}>
-                                                {lead.promotion_fit_score}/10
-                                              </span>
-                                            )}
-                                          </div>
+                                  </div>
+                                  <div className="border-t divide-y">
+                                    {matchedLeads.map((lead) => (
+                                      <div
+                                        key={lead.id}
+                                        className="px-4 py-2 flex items-center justify-between hover:bg-gray-50 cursor-pointer"
+                                        onClick={() => setSelectedLead(lead)}
+                                      >
+                                        <div className="min-w-0">
+                                          <p className="text-sm font-medium text-gray-900 truncate">{lead.full_name || lead.name || 'Unknown'}</p>
+                                          <p className="text-xs text-gray-500 truncate">{lead.email}</p>
                                         </div>
-                                      ))}
-                                    </div>
-                                  )}
+                                        <div className="flex items-center gap-3 shrink-0 text-xs text-gray-500">
+                                          {lead.platform && <span>{lead.platform}</span>}
+                                          {lead.promotion_fit_score && (
+                                            <span className={`font-medium ${
+                                              lead.promotion_fit_score >= 7 ? 'text-green-600' :
+                                              lead.promotion_fit_score >= 4 ? 'text-yellow-600' : 'text-red-500'
+                                            }`}>
+                                              {lead.promotion_fit_score}/10
+                                            </span>
+                                          )}
+                                        </div>
+                                      </div>
+                                    ))}
+                                  </div>
                                 </>
                               )}
                             </div>
@@ -2157,6 +2122,14 @@ export function Dashboard({ userEmail }: DashboardProps) {
                       </div>
                     )}
                   </div>
+                )}
+
+                {/* Autopilot Tab */}
+                {activeTab === 'autopilot' && company && (
+                  <AutopilotTab
+                    company={company}
+                    onCompanyUpdated={(updates) => setCompany((prev) => (prev ? { ...prev, ...updates } : prev))}
+                  />
                 )}
               </>
             )}
@@ -2535,11 +2508,11 @@ export function Dashboard({ userEmail }: DashboardProps) {
               <div className="flex gap-3 p-3 rounded-lg border border-gray-200 bg-gray-50/50">
                 <div className="shrink-0 w-6 h-6 rounded-full bg-gray-200 text-gray-600 flex items-center justify-center text-xs font-bold">1</div>
                 <div>
-                  <div className="flex items-center gap-2">
-                    <p className="font-medium text-gray-900 text-sm">You add context</p>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <p className="font-medium text-gray-900 text-sm">You set context (and optional briefs)</p>
                     <span className="text-[10px] uppercase tracking-wider font-semibold text-gray-400 bg-gray-100 px-1.5 py-0.5 rounded">You</span>
                   </div>
-                  <p className="text-xs text-gray-500 mt-0.5">Tell the AI what kind of leads you want. For example: "Find acting coaches on TikTok with 10k+ followers" or "Look for casting directors in NYC".</p>
+                  <p className="text-xs text-gray-500 mt-0.5">Fill in your Company Profile and target audience — the AI will search broadly off that. For more targeted hunts, add Lead Briefs like "acting coaches on TikTok with 10k+ followers" or "casting directors in NYC".</p>
                 </div>
               </div>
 
@@ -2552,7 +2525,7 @@ export function Dashboard({ userEmail }: DashboardProps) {
                   <div className="shrink-0 w-6 h-6 rounded-full bg-indigo-100 text-indigo-700 flex items-center justify-center text-xs font-bold">2</div>
                   <div>
                     <p className="font-medium text-gray-900 text-sm">Generate searches</p>
-                    <p className="text-xs text-gray-500 mt-0.5">When you add an instruction, choose Queue (scheduled for 8:30 AM generation + 9:00 AM run) or Run now (immediate generation and run).</p>
+                    <p className="text-xs text-gray-500 mt-0.5">Daily at 8:30 AM, the AI generates fresh searches from your company context and any briefs. You can also add a brief with Queue (runs at 9 AM) or Run now (immediate).</p>
                   </div>
                 </div>
                 <div className="flex gap-3 p-3 rounded-md bg-white/70">
@@ -2571,15 +2544,19 @@ export function Dashboard({ userEmail }: DashboardProps) {
                 </div>
               </div>
 
-              {/* Step 5 - Manual */}
+              {/* Step 5 - You or Autopilot */}
               <div className="flex gap-3 p-3 rounded-lg border border-gray-200 bg-gray-50/50">
                 <div className="shrink-0 w-6 h-6 rounded-full bg-gray-200 text-gray-600 flex items-center justify-center text-xs font-bold">5</div>
                 <div>
-                  <div className="flex items-center gap-2">
-                    <p className="font-medium text-gray-900 text-sm">You approve and send</p>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <p className="font-medium text-gray-900 text-sm">Approve and send</p>
                     <span className="text-[10px] uppercase tracking-wider font-semibold text-gray-400 bg-gray-100 px-1.5 py-0.5 rounded">You</span>
+                    <span className="text-[10px] uppercase tracking-wider font-semibold text-green-700 bg-green-100 px-1.5 py-0.5 rounded">or Autopilot</span>
                   </div>
-                  <p className="text-xs text-gray-500 mt-0.5">Preview and edit draft sequences, then click "Create and Start Campaign". Only then do we create it in Instantly and add the lead.</p>
+                  <p className="text-xs text-gray-500 mt-0.5">
+                    <strong className="text-gray-700">Manual:</strong> preview and edit each draft in Ready to Add, then hit "Create and Start Campaign".{' '}
+                    <strong className="text-gray-700">Autopilot:</strong> every day at 10am ET, the top N qualifying leads get sent automatically with a digest email summarizing what went out.
+                  </p>
                 </div>
               </div>
 
@@ -2595,11 +2572,11 @@ export function Dashboard({ userEmail }: DashboardProps) {
                   </div>
                 </div>
 
-                <div className="flex gap-3 p-3 rounded-lg border border-amber-200 bg-amber-50/30">
-                  <Zap className="shrink-0 h-5 w-5 text-amber-600 mt-0.5" />
+                <div className="flex gap-3 p-3 rounded-lg border border-green-200 bg-green-50/30">
+                  <Zap className="shrink-0 h-5 w-5 text-green-600 mt-0.5" />
                   <div>
-                    <p className="font-medium text-gray-900 text-sm">Autopilot ON / OFF</p>
-                    <p className="text-xs text-gray-500 mt-0.5">When ON, high-fit leads (score 7+) are auto-sent: draft is created in Instantly and the lead is added. When OFF, you review and click "Create and Start Campaign" manually.</p>
+                    <p className="font-medium text-gray-900 text-sm">Autopilot</p>
+                    <p className="text-xs text-gray-500 mt-0.5">Open the Autopilot tab to toggle daily auto-add and configure daily limit, fit score, draft refresh, and digest email. When on, the top qualifying Ready-to-Add leads get auto-added every day at 10am ET with a digest email summarizing what went out.</p>
                   </div>
                 </div>
               </div>
@@ -2610,8 +2587,9 @@ export function Dashboard({ userEmail }: DashboardProps) {
                 <div className="text-xs text-gray-500 space-y-1.5">
                   <div className="flex gap-2"><span className="font-mono text-gray-400 w-16 shrink-0">8:30 AM</span><span>Generate new search queries from your instructions</span></div>
                   <div className="flex gap-2"><span className="font-mono text-gray-400 w-16 shrink-0">9:00 AM</span><span>Run searches, discover leads, enrich and score them</span></div>
+                  <div className="flex gap-2"><span className="font-mono text-gray-400 w-16 shrink-0">10:00 AM</span><span>Autopilot sweep: auto-add top Ready-to-Add leads (if enabled) + digest email</span></div>
                   <div className="flex gap-2"><span className="font-mono text-gray-400 w-16 shrink-0">Hourly</span><span>Sync campaign status and analytics from Instantly</span></div>
-                  <div className="flex gap-2"><span className="font-mono text-gray-400 w-16 shrink-0">6:00 PM</span><span>Send daily digest email with summary</span></div>
+                  <div className="flex gap-2"><span className="font-mono text-gray-400 w-16 shrink-0">2:00 PM</span><span>Send daily discovery digest email</span></div>
                 </div>
               </div>
             </div>

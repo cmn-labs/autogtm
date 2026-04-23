@@ -8,10 +8,46 @@ export const CompanySchema = z.object({
   description: z.string(),
   target_audience: z.string(),
   default_sequence_length: z.number().min(1).max(3).default(2),
+  // Autopilot (daily auto-add sweep) preferences
+  auto_add_enabled: z.boolean().optional(),
+  auto_add_min_fit_score: z.number().min(1).max(10).optional(),
+  auto_add_daily_limit: z.number().min(0).max(500).optional(),
+  auto_add_run_hour_utc: z.number().min(0).max(23).optional(),
+  auto_add_digest_email: z.string().nullable().optional(),
+  auto_add_regenerate_drafts: z.boolean().optional(),
   created_at: z.string().datetime(),
   updated_at: z.string().datetime(),
 });
 export type Company = z.infer<typeof CompanySchema>;
+
+// Auto Add Run — audit record for each daily sweep
+export const AutoAddRunBreakdownEntrySchema = z.object({
+  campaignId: z.string().uuid(),
+  campaignName: z.string(),
+  count: z.number(),
+  avgFitScore: z.number(),
+});
+export type AutoAddRunBreakdownEntry = z.infer<typeof AutoAddRunBreakdownEntrySchema>;
+
+export const AutoAddRunSchema = z.object({
+  id: z.string().uuid(),
+  company_id: z.string().uuid(),
+  run_started_at: z.string().datetime(),
+  run_completed_at: z.string().datetime().nullable(),
+  leads_considered: z.number().default(0),
+  leads_added: z.number().default(0),
+  leads_skipped: z.number().default(0),
+  min_fit_score: z.number(),
+  daily_limit: z.number(),
+  breakdown: z.array(AutoAddRunBreakdownEntrySchema).default([]),
+  added_lead_ids: z.array(z.string().uuid()).default([]),
+  skip_reasons: z.record(z.number()).default({}),
+  digest_sent: z.boolean().default(false),
+  digest_error: z.string().nullable().optional(),
+  error: z.string().nullable().optional(),
+  trigger: z.enum(['cron', 'manual']).default('cron'),
+});
+export type AutoAddRun = z.infer<typeof AutoAddRunSchema>;
 
 // Exa Query schema
 export const ExaQuerySchema = z.object({

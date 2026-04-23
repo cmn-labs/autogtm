@@ -160,7 +160,7 @@ export default function LandingPage() {
         >
           <div className="inline-flex items-center gap-2 bg-indigo-50 text-indigo-700 text-sm font-medium px-4 py-1.5 rounded-full mb-8">
             <Zap className="h-3.5 w-3.5" />
-            Open-source GTM engine
+            Open-source AI GTM engine
           </div>
           <h1 className="text-5xl sm:text-6xl lg:text-7xl font-extrabold tracking-tight text-gray-950 leading-[1.08]">
             Cold outbound
@@ -168,7 +168,7 @@ export default function LandingPage() {
             <span className="bg-gradient-to-r from-indigo-600 to-indigo-500 bg-clip-text text-transparent">on autopilot</span>
           </h1>
           <p className="mt-6 text-lg sm:text-xl text-gray-500 max-w-2xl mx-auto leading-relaxed">
-            Describe your target audience in plain English. AutoGTM discovers leads daily, enriches them with AI, creates tailored email campaigns, and sends via Instantly. Self-host it or let us run it for you.
+            Describe who you want to reach. autogtm finds leads, writes personalized campaigns, and reaches out to them on Autopilot.
           </p>
           <div className="mt-10 flex flex-col sm:flex-row items-center justify-center gap-4">
             <button
@@ -214,7 +214,7 @@ export default function LandingPage() {
               </div>
               <div className="bg-gray-900 rounded-xl p-3 sm:p-5">
                 <div className="text-rose-400 font-mono text-[10px] sm:text-xs mb-2 sm:mb-3 uppercase tracking-wider">Send</div>
-                <p className="text-white text-xs sm:text-sm font-medium">Personalized campaigns via Instantly</p>
+                <p className="text-white text-xs sm:text-sm font-medium">Autopilot sends via Instantly, or you review first</p>
               </div>
             </div>
           </div>
@@ -239,8 +239,8 @@ export default function LandingPage() {
             {[
               {
                 num: '1',
-                title: 'You describe who you want to reach',
-                desc: 'Plain English. "Find acting coaches with 10-50k followers" or "Look for B2B SaaS founders who recently raised seed rounds." That\u2019s it.',
+                title: 'You set context, add optional briefs',
+                desc: 'Fill in your Company Profile once and the AI searches broadly off that. Drop in optional Lead Briefs to pinpoint specific hunts: "acting coaches with 10-50k followers" or "B2B SaaS founders who recently raised seed rounds."',
               },
               {
                 num: '2',
@@ -254,8 +254,8 @@ export default function LandingPage() {
               },
               {
                 num: '4',
-                title: 'Emails go out, or you review first',
-                desc: 'Turn Autopilot on and high-fit leads go straight into Instantly campaigns. Or review each one manually. Your call.',
+                title: 'Autopilot sends, or you review first',
+                desc: 'With Autopilot on, each morning at 10am ET the top N qualifying leads are auto-added to their Instantly campaigns, and a digest email lands in your inbox summarizing exactly what went out. Or review every draft manually. Your call.',
               },
             ].map((item, i) => (
               <div key={item.num} className="flex gap-5 sm:gap-6">
@@ -304,12 +304,12 @@ export default function LandingPage() {
               {
                 icon: Clock,
                 title: 'Runs on a daily schedule',
-                desc: 'Morning: generate queries and discover leads. Throughout the day: enrich, score, and route. Evening: digest with everything that happened.',
+                desc: 'Morning: fresh searches and lead discovery. 10am ET: Autopilot sweeps the backlog and auto-sends top picks with a digest email. Hourly: analytics sync back from Instantly.',
               },
               {
                 icon: Zap,
-                title: 'Autopilot or manual review',
-                desc: 'High-fit leads can go straight into campaigns automatically. Or you review every single one before anything sends. One toggle.',
+                title: 'Autopilot with guardrails',
+                desc: 'Daily sweep auto-adds the top N Ready-to-Add leads above your fit-score threshold. Set the daily limit, optionally regenerate draft copy before sending, and receive a digest summary. Full control, zero babysitting.',
               },
               {
                 icon: BarChart3,
