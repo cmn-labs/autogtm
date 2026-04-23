@@ -18,6 +18,10 @@ create table companies (
   email_prompt text,
   auto_add_enabled boolean not null default false,
   auto_add_min_fit_score integer not null default 7,
+  auto_add_daily_limit integer not null default 5 check (auto_add_daily_limit between 0 and 500),
+  auto_add_run_hour_utc integer not null default 14 check (auto_add_run_hour_utc between 0 and 23),
+  auto_add_digest_email text,
+  auto_add_regenerate_drafts boolean not null default false,
   agent_notes text,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
@@ -187,6 +191,29 @@ create table daily_digests (
 );
 
 -- ============================================================
+-- Auto Add Runs (daily autopilot sweep audit + digest history)
+-- ============================================================
+create table auto_add_runs (
+  id uuid primary key default uuid_generate_v4(),
+  company_id uuid not null references companies(id) on delete cascade,
+  run_started_at timestamptz not null default now(),
+  run_completed_at timestamptz,
+  leads_considered integer not null default 0,
+  leads_added integer not null default 0,
+  leads_skipped integer not null default 0,
+  min_fit_score integer not null,
+  daily_limit integer not null,
+  breakdown jsonb not null default '[]'::jsonb,
+  added_lead_ids uuid[] not null default '{}',
+  skip_reasons jsonb not null default '{}'::jsonb,
+  digest_sent boolean not null default false,
+  digest_error text,
+  error text,
+  trigger text not null default 'cron'
+);
+create index auto_add_runs_company_started_idx on auto_add_runs(company_id, run_started_at desc);
+
+-- ============================================================
 -- Allowed Users (invite whitelist)
 -- ============================================================
 create table allowed_users (
@@ -220,6 +247,7 @@ alter table campaigns enable row level security;
 alter table campaign_emails enable row level security;
 alter table leads enable row level security;
 alter table daily_digests enable row level security;
+alter table auto_add_runs enable row level security;
 alter table allowed_users enable row level security;
 
 -- Allow authenticated users full access (adjust as needed for your use case)
@@ -249,6 +277,9 @@ create policy "Authenticated users can manage leads"
 
 create policy "Authenticated users can manage daily_digests"
   on daily_digests for all using (auth.role() = 'authenticated');
+
+create policy "Authenticated users can manage auto_add_runs"
+  on auto_add_runs for all using (auth.role() = 'authenticated');
 
 create policy "Authenticated users can read allowed_users"
   on allowed_users for select using (auth.role() = 'authenticated');

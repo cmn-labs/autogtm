@@ -2,7 +2,6 @@ import { inngest } from './client';
 import { getExaClient } from '@autogtm/core/clients/exa';
 import { enrichLead } from '@autogtm/core/ai/enrichLead';
 import {
-  addLeadsToCampaign,
   getCampaign,
   getCampaignAnalytics,
 } from '@autogtm/core/clients/instantly';
@@ -10,14 +9,19 @@ import {
   updateCampaignStats,
   createDailyDigest,
   getLeadsByDateRange,
-  markLeadRouted,
   markLeadSkipped,
-  incrementCampaignLeadCount,
   setSuggestedCampaign,
   getCampaignBySourceLeadId,
+  listAutoEnabledCompanies,
+  getEligibleLeadsForAutoAdd,
+  countReadyToAddLeads,
+  createAutoAddRun,
+  completeAutoAddRun,
 } from '@autogtm/core/db/autogtmDbCalls';
 import { determineCampaignForLead } from '@autogtm/core/ai/determineCampaign';
-import { createDraftCampaignForLead, sendDraftCampaignForLead } from '@autogtm/core/campaigns/createCampaignForPersona';
+import { createDraftCampaignForLead } from '@autogtm/core/campaigns/createCampaignForPersona';
+import { addLeadToCampaignCore, type AddLeadToCampaignResult } from '@autogtm/core/campaigns/addLeadToCampaign';
+import type { AutoAddRunBreakdownEntry } from '@autogtm/core/types';
 import { extractEmailFromEnrichmentData } from '@autogtm/core/ai/extractEmail';
 import { resolveOutreachPromptForLead } from '@/lib/outreachPromptResolver';
 import { Resend } from 'resend';
@@ -1024,46 +1028,9 @@ export const enrichLeadJob = inngest.createFunction(
       setSuggestedCampaign(leadId, suggestedCampaignId, routingDecision.reason)
     );
 
-    // Auto-add if enabled and lead meets fit threshold
-    const minScore = company.auto_add_min_fit_score || 7;
-    if (company.auto_add_enabled && resolvedEmail && enrichedData.promotion_fit_score >= minScore) {
-      const campaignData = await step.run('auto-get-campaign', async () => {
-        const { data } = await supabase.from('campaigns').select('instantly_campaign_id, status, is_accepting_leads, leads_count, max_leads').eq('id', suggestedCampaignId).single();
-        return data;
-      });
-
-      const canAutoAdd = campaignData
-        && (campaignData.status === 'active' || campaignData.status === 'draft')
-        && campaignData.is_accepting_leads
-        && (campaignData.leads_count || 0) < (campaignData.max_leads || 500);
-
-      if (campaignData && canAutoAdd && resolvedEmail?.trim() && enrichedData.full_name?.trim()) {
-        logger.info(`Auto-adding lead ${leadId} (fit: ${enrichedData.promotion_fit_score}) to campaign ${suggestedCampaignId}`);
-        if (campaignData.status === 'draft' || !campaignData.instantly_campaign_id) {
-          await step.run('auto-send-draft', () => sendDraftCampaignForLead({
-            campaignId: suggestedCampaignId,
-            leadId,
-            companySendingEmails: company.sending_emails,
-          }));
-        } else {
-          await step.run('auto-add-to-instantly', () =>
-            addLeadsToCampaign(campaignData.instantly_campaign_id, [{
-              email: resolvedEmail!.trim(),
-              first_name: enrichedData.full_name?.split(' ')[0] || '',
-              variables: { lead_url: leadUrl || '' },
-            }])
-          );
-
-          await step.run('auto-mark-routed', async () => {
-            await markLeadRouted(leadId, suggestedCampaignId);
-            await incrementCampaignLeadCount(suggestedCampaignId);
-          });
-        }
-
-        return { leadId, fullName: enrichedData.full_name, category: enrichedData.category, fitScore: enrichedData.promotion_fit_score, routing: { action: 'auto_added', campaignId: suggestedCampaignId } };
-      }
-    }
-
+    // Autopilot is intentionally NOT triggered inline here. The daily Auto Add Sweep
+    // (`autoAddSweep`) scours the "Ready to Add" backlog once per day and routes the
+    // top N qualifying leads, respecting the per-company daily_limit and min_fit_score.
     return { leadId, fullName: enrichedData.full_name, category: enrichedData.category, fitScore: enrichedData.promotion_fit_score, routing: { action: 'suggested', campaignId: suggestedCampaignId } };
   }
 );
@@ -1082,61 +1049,339 @@ export const addLeadToCampaignJob = inngest.createFunction(
   { event: 'autogtm/lead.add-to-campaign' },
   async ({ event, step, logger }) => {
     const { leadId, campaignId } = event.data;
-    const supabase = getSupabase();
-
     logger.info(`Adding lead ${leadId} to campaign ${campaignId}`);
 
-    // Get lead + campaign data
-    const data = await step.run('get-data', async () => {
-      const [{ data: lead }, { data: campaign }] = await Promise.all([
-        supabase.from('leads').select('email, full_name, title, bio, url, social_links, total_audience').eq('id', leadId).single(),
-        supabase.from('campaigns').select('id, instantly_campaign_id, status').eq('id', campaignId).single(),
-      ]);
-      return { lead, campaign };
-    });
-
-    if (!data.lead?.email?.trim()) throw new Error(`Lead ${leadId} has no email`);
-    if (!data.lead?.full_name?.trim()) throw new Error(`Lead ${leadId} has no name - skipping to avoid blank {{first_name}}`);
-    if (!data.campaign) throw new Error(`Campaign ${campaignId} not found`);
-
-    // Split full_name into first/last
-    const nameParts = data.lead.full_name.trim().split(/\s+/);
-    const firstName = nameParts[0];
-    const lastName = nameParts.length > 1 ? nameParts.slice(1).join(' ') : '';
-
-    if (data.campaign?.status === 'draft' || !data.campaign?.instantly_campaign_id) {
-      await step.run('send-draft-and-add', () => sendDraftCampaignForLead({
-        campaignId,
-        leadId,
-      }));
-    } else {
-      // Add to Instantly with all enriched data
-      await step.run('add-to-instantly', () =>
-        addLeadsToCampaign(data.campaign!.instantly_campaign_id, [{
-          email: data.lead!.email!.trim(),
-          first_name: firstName,
-          last_name: lastName,
-          company_name: '',
-          variables: {
-            lead_url: data.lead!.url || '',
-            title: data.lead!.title || '',
-            bio: data.lead!.bio || '',
-            audience_size: String(data.lead!.total_audience || ''),
-          },
-        }])
-      );
-
-      // Mark as routed in DB
-      await step.run('mark-routed', async () => {
-        await markLeadRouted(leadId, campaignId);
-        await incrementCampaignLeadCount(campaignId);
-      });
-    }
+    await step.run('route-lead', () => addLeadToCampaignCore({ leadId, campaignId }));
 
     logger.info(`Lead ${leadId} added to campaign ${campaignId}`);
     return { leadId, campaignId };
   }
 );
+
+/**
+ * Auto Add Sweep - Scours the "Ready to Add" backlog once per day and routes
+ * the top N qualifying leads for each company that has autopilot enabled.
+ * Runs at 14:00 UTC (10am ET) — after discovery (09:00) and enrichment have
+ * had time to settle on the day's freshest leads.
+ */
+export const autoAddSweep = inngest.createFunction(
+  { id: 'auto-add-sweep', name: 'Auto Add Sweep' },
+  { cron: '0 14 * * *' },
+  async ({ step, logger }) => {
+    const companies = await step.run('list-auto-enabled-companies', () => listAutoEnabledCompanies());
+    logger.info(`Autopilot sweep: ${companies.length} enabled companies`);
+
+    if (companies.length === 0) return { companies: 0 };
+
+    await step.sendEvent('fanout-auto-sweep', companies.map((c) => ({
+      name: 'autogtm/auto-add.sweep-company' as const,
+      data: { companyId: c.id, trigger: 'cron' as const },
+    })));
+
+    return { companies: companies.length };
+  }
+);
+
+/**
+ * Auto Add Sweep (per-company) - picks top N leads, routes each via the shared
+ * core, aggregates a per-campaign breakdown, writes an audit row and emails a digest.
+ */
+export const autoAddSweepCompany = inngest.createFunction(
+  {
+    id: 'auto-add-sweep-company',
+    name: 'Auto Add Sweep (Company)',
+    concurrency: { key: 'event.data.companyId', limit: 1 },
+    retries: 1,
+  },
+  { event: 'autogtm/auto-add.sweep-company' },
+  async ({ event, step, logger }) => {
+    const { companyId, trigger } = event.data as { companyId: string; trigger: 'cron' | 'manual' };
+    const supabase = getSupabase();
+
+    // Load company + verify autopilot still on (prefs may have flipped between fanout and run)
+    const company = await step.run('load-company', async () => {
+      const { data } = await supabase
+        .from('companies')
+        .select('id, name, system_enabled, auto_add_enabled, auto_add_min_fit_score, auto_add_daily_limit, auto_add_digest_email, auto_add_regenerate_drafts')
+        .eq('id', companyId)
+        .single();
+      return data as {
+        id: string;
+        name: string;
+        system_enabled: boolean;
+        auto_add_enabled: boolean;
+        auto_add_min_fit_score: number;
+        auto_add_daily_limit: number;
+        auto_add_digest_email: string | null;
+        auto_add_regenerate_drafts: boolean;
+      } | null;
+    });
+
+    if (!company) {
+      logger.warn(`Autopilot sweep: company ${companyId} not found`);
+      return { skipped: true, reason: 'company_not_found' };
+    }
+    if (!company.system_enabled) {
+      logger.info(`Autopilot sweep: company ${companyId} has System OFF, skipping (even for manual triggers)`);
+      return { skipped: true, reason: 'system_disabled' };
+    }
+    if (!company.auto_add_enabled && trigger === 'cron') {
+      logger.info(`Autopilot sweep: company ${companyId} disabled, skipping`);
+      return { skipped: true, reason: 'disabled' };
+    }
+
+    const minFitScore = company.auto_add_min_fit_score || 7;
+    const dailyLimit = company.auto_add_daily_limit ?? 5;
+    const regenerateDraftFirst = company.auto_add_regenerate_drafts === true;
+
+    const run = await step.run('create-run', () =>
+      createAutoAddRun({ companyId, minFitScore, dailyLimit, trigger })
+    );
+
+    if (dailyLimit <= 0) {
+      await step.run('complete-run-zero-limit', () =>
+        completeAutoAddRun(run.id, { leads_considered: 0, leads_added: 0, leads_skipped: 0, error: null })
+      );
+      return { runId: run.id, added: 0, reason: 'daily_limit_zero' };
+    }
+
+    const candidates = await step.run('fetch-candidates', () =>
+      getEligibleLeadsForAutoAdd(companyId, minFitScore, dailyLimit)
+    );
+
+    if (candidates.length === 0) {
+      await step.run('complete-run-empty', () =>
+        completeAutoAddRun(run.id, { leads_considered: 0, leads_added: 0, leads_skipped: 0, error: null })
+      );
+      logger.info(`Autopilot sweep: company ${companyId} — 0 qualifying leads, skipping digest`);
+      return { runId: run.id, added: 0 };
+    }
+
+    // Route each lead synchronously so we can collect a breakdown.
+    const perCampaign = new Map<string, { count: number; totalScore: number }>();
+    const skipReasons: Record<string, number> = {};
+    const addedLeadIds: string[] = [];
+    const addedLeadSummaries: Array<{ id: string; name: string; score: number; category: string | null; bio: string | null; reason: string | null }> = [];
+    let leadsSkipped = 0;
+    let regeneratedCount = 0;
+
+    for (const lead of candidates) {
+      const result = await step.run(`route-${lead.id}`, async (): Promise<AddLeadToCampaignResult> =>
+        addLeadToCampaignCore({
+          leadId: lead.id,
+          campaignId: lead.suggested_campaign_id,
+          softFail: true,
+          markSkipped: true,
+          regenerateDraftFirst,
+        })
+      );
+      if (result.ok) {
+        addedLeadIds.push(lead.id);
+        if (result.regenerated) regeneratedCount += 1;
+        addedLeadSummaries.push({
+          id: lead.id,
+          name: lead.full_name,
+          score: lead.promotion_fit_score,
+          category: lead.category,
+          bio: lead.bio,
+          reason: lead.suggested_campaign_reason,
+        });
+        const bucket = perCampaign.get(lead.suggested_campaign_id) || { count: 0, totalScore: 0 };
+        bucket.count += 1;
+        bucket.totalScore += lead.promotion_fit_score;
+        perCampaign.set(lead.suggested_campaign_id, bucket);
+      } else {
+        leadsSkipped += 1;
+        skipReasons[result.reason] = (skipReasons[result.reason] || 0) + 1;
+      }
+    }
+
+    // Resolve campaign names for the digest breakdown
+    const breakdown = await step.run('build-breakdown', async (): Promise<AutoAddRunBreakdownEntry[]> => {
+      const ids = Array.from(perCampaign.keys());
+      if (ids.length === 0) return [];
+      const { data } = await supabase.from('campaigns').select('id, name').in('id', ids);
+      const nameById = new Map((data || []).map((c: { id: string; name: string }) => [c.id, c.name]));
+      return ids.map((id) => {
+        const b = perCampaign.get(id)!;
+        return {
+          campaignId: id,
+          campaignName: nameById.get(id) || 'Unknown campaign',
+          count: b.count,
+          avgFitScore: Math.round((b.totalScore / b.count) * 10) / 10,
+        };
+      }).sort((a, b) => b.count - a.count);
+    });
+
+    const backlogRemaining = await step.run('count-backlog', () =>
+      countReadyToAddLeads(companyId, minFitScore)
+    );
+
+    // Send digest email (skip on zero-add days per product decision)
+    let digestSent = false;
+    let digestError: string | null = null;
+    if (addedLeadIds.length > 0) {
+      const digestResult = await step.run('send-digest', async () => {
+        const envRecipients = process.env.DIGEST_RECIPIENTS?.split(',').map((s) => s.trim()).filter(Boolean) || [];
+        const recipients = company.auto_add_digest_email?.trim()
+          ? [company.auto_add_digest_email.trim()]
+          : envRecipients;
+        if (recipients.length === 0) {
+          return { sent: false, error: 'no_recipients' };
+        }
+        try {
+          const appUrl = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3200';
+          const subject = `Autopilot · ${company.name} · ${addedLeadIds.length} lead${addedLeadIds.length === 1 ? '' : 's'} added`;
+          await getResend().emails.send({
+            from: process.env.DIGEST_FROM_EMAIL || 'autogtm <noreply@example.com>',
+            to: recipients,
+            subject,
+            html: renderAutoAddDigestHtml({
+              companyName: company.name,
+              leadsAdded: addedLeadIds.length,
+              leadsSkipped,
+              breakdown,
+              topLeads: addedLeadSummaries.slice(0, 5),
+              skipReasons,
+              backlogRemaining,
+              minFitScore,
+              dailyLimit,
+              trigger,
+              appUrl,
+              regeneratedCount,
+            }),
+          });
+          return { sent: true, error: null as string | null };
+        } catch (e) {
+          return { sent: false, error: e instanceof Error ? e.message : String(e) };
+        }
+      });
+      digestSent = digestResult.sent;
+      digestError = digestResult.error;
+    }
+
+    await step.run('complete-run', () =>
+      completeAutoAddRun(run.id, {
+        leads_considered: candidates.length,
+        leads_added: addedLeadIds.length,
+        leads_skipped: leadsSkipped,
+        breakdown,
+        added_lead_ids: addedLeadIds,
+        skip_reasons: skipReasons,
+        digest_sent: digestSent,
+        digest_error: digestError,
+      })
+    );
+
+    logger.info(`Autopilot sweep: company ${companyId} — added ${addedLeadIds.length}, regenerated ${regeneratedCount}, skipped ${leadsSkipped}, digest=${digestSent}`);
+    return {
+      runId: run.id,
+      companyId,
+      considered: candidates.length,
+      added: addedLeadIds.length,
+      regenerated: regeneratedCount,
+      skipped: leadsSkipped,
+      digestSent,
+    };
+  }
+);
+
+function renderAutoAddDigestHtml(params: {
+  companyName: string;
+  leadsAdded: number;
+  leadsSkipped: number;
+  breakdown: AutoAddRunBreakdownEntry[];
+  topLeads: Array<{ id: string; name: string; score: number; category: string | null; bio: string | null; reason: string | null }>;
+  skipReasons: Record<string, number>;
+  backlogRemaining: number;
+  minFitScore: number;
+  dailyLimit: number;
+  trigger: 'cron' | 'manual';
+  appUrl: string;
+  regeneratedCount: number;
+}): string {
+  const { companyName, leadsAdded, leadsSkipped, breakdown, topLeads, skipReasons, backlogRemaining, minFitScore, dailyLimit, trigger, appUrl, regeneratedCount } = params;
+  const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const triggerLabel = trigger === 'manual' ? 'Manual run' : 'Daily run';
+
+  const breakdownRows = breakdown.map((b) => `
+    <tr>
+      <td style="padding:10px 14px;border-top:1px solid #eee;font-size:14px;color:#111;">${esc(b.campaignName)}</td>
+      <td style="padding:10px 14px;border-top:1px solid #eee;font-size:14px;color:#111;text-align:right;"><strong>${b.count}</strong></td>
+      <td style="padding:10px 14px;border-top:1px solid #eee;font-size:14px;color:#666;text-align:right;">${b.avgFitScore.toFixed(1)}</td>
+    </tr>
+  `).join('');
+
+  const topLeadsHtml = topLeads.map((l) => `
+    <div style="padding:12px 0;border-top:1px solid #eee;">
+      <div style="font-size:14px;color:#111;"><strong>${esc(l.name)}</strong> <span style="color:#999;">· fit ${l.score}/10${l.category ? ' · ' + esc(l.category) : ''}</span></div>
+      ${l.bio ? `<div style="font-size:13px;color:#555;margin-top:4px;">${esc(l.bio.slice(0, 160))}${l.bio.length > 160 ? '…' : ''}</div>` : ''}
+      ${l.reason ? `<div style="font-size:12px;color:#888;margin-top:4px;font-style:italic;">Why: ${esc(l.reason)}</div>` : ''}
+    </div>
+  `).join('');
+
+  const skipReasonsHtml = Object.keys(skipReasons).length === 0
+    ? ''
+    : `<div style="margin-top:16px;padding:12px 14px;background:#fff7ed;border:1px solid #fed7aa;border-radius:8px;font-size:13px;color:#9a3412;">
+        <strong>Skipped ${leadsSkipped}:</strong>
+        ${Object.entries(skipReasons).map(([r, n]) => `${n} × ${esc(r.replace(/_/g, ' '))}`).join(' · ')}
+       </div>`;
+
+  return `<!doctype html>
+<html>
+  <body style="margin:0;padding:0;background:#f6f7f9;font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif;">
+    <div style="max-width:640px;margin:0 auto;padding:32px 20px;">
+      <div style="background:#fff;border-radius:12px;border:1px solid #eee;overflow:hidden;">
+        <div style="padding:24px 28px;background:linear-gradient(135deg,#10b981 0%,#059669 100%);color:#fff;">
+          <div style="font-size:13px;opacity:.9;letter-spacing:.04em;text-transform:uppercase;">Autopilot · ${esc(triggerLabel)}</div>
+          <div style="font-size:28px;font-weight:700;margin-top:6px;">${esc(companyName)}</div>
+          <div style="font-size:16px;margin-top:10px;opacity:.95;">${leadsAdded} lead${leadsAdded === 1 ? '' : 's'} added to campaigns today</div>
+        </div>
+
+        <div style="padding:24px 28px;">
+          <h3 style="margin:0 0 12px 0;font-size:14px;color:#666;font-weight:600;letter-spacing:.03em;text-transform:uppercase;">By campaign</h3>
+          <table style="width:100%;border-collapse:collapse;border:1px solid #eee;border-radius:8px;overflow:hidden;">
+            <thead>
+              <tr style="background:#fafafa;">
+                <th style="padding:10px 14px;text-align:left;font-size:12px;color:#888;font-weight:600;text-transform:uppercase;letter-spacing:.04em;">Campaign</th>
+                <th style="padding:10px 14px;text-align:right;font-size:12px;color:#888;font-weight:600;text-transform:uppercase;letter-spacing:.04em;">Added</th>
+                <th style="padding:10px 14px;text-align:right;font-size:12px;color:#888;font-weight:600;text-transform:uppercase;letter-spacing:.04em;">Avg fit</th>
+              </tr>
+            </thead>
+            <tbody>${breakdownRows}</tbody>
+          </table>
+
+          ${topLeads.length > 0 ? `
+            <h3 style="margin:28px 0 8px 0;font-size:14px;color:#666;font-weight:600;letter-spacing:.03em;text-transform:uppercase;">Top picks</h3>
+            <div>${topLeadsHtml}</div>
+          ` : ''}
+
+          ${skipReasonsHtml}
+
+          ${regeneratedCount > 0 ? `
+            <div style="margin-top:16px;padding:12px 14px;background:#eef2ff;border:1px solid #c7d2fe;border-radius:8px;font-size:13px;color:#3730a3;">
+              Regenerated draft copy for <strong>${regeneratedCount}</strong> lead${regeneratedCount === 1 ? '' : 's'} before sending (fresh per-lead hooks).
+            </div>
+          ` : ''}
+
+          <div style="margin-top:24px;padding:14px 16px;background:#f9fafb;border-radius:8px;font-size:13px;color:#555;">
+            <strong style="color:#111;">${backlogRemaining}</strong> more Ready-to-Add leads in the queue at fit ≥ ${minFitScore}.
+            Tomorrow's sweep will process up to ${dailyLimit}.
+          </div>
+
+          <div style="margin-top:24px;text-align:center;">
+            <a href="${esc(appUrl)}" style="display:inline-block;padding:12px 24px;background:#111;color:#fff;text-decoration:none;border-radius:8px;font-size:14px;font-weight:600;">View Dashboard</a>
+          </div>
+        </div>
+
+        <div style="padding:16px 28px;border-top:1px solid #eee;font-size:12px;color:#999;">
+          autogtm Autopilot · ${esc(companyName)}
+        </div>
+      </div>
+    </div>
+  </body>
+</html>`;
+}
 
 // Export all functions
 export const functions = [
@@ -1150,4 +1395,6 @@ export const functions = [
   runCompanyWebsetSearch,
   dailyDigest,
   syncCampaignAnalytics,
+  autoAddSweep,
+  autoAddSweepCompany,
 ];

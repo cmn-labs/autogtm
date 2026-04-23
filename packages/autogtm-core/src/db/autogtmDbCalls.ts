@@ -14,6 +14,8 @@ import type {
   CampaignEmail,
   DailyDigest,
   AllowedUser,
+  AutoAddRun,
+  AutoAddRunBreakdownEntry,
 } from '../types';
 import { getCampaignAnalytics } from '../clients/instantly';
 
@@ -595,4 +597,147 @@ export async function getCompanyStats(companyId: string): Promise<{
     totalOpens,
     totalReplies,
   };
+}
+
+// ============ Auto Add Sweep (Autopilot) ============
+
+/** Leads that qualify for the daily auto-add sweep for a given company. */
+export interface AutoAddEligibleLead {
+  id: string;
+  email: string;
+  full_name: string;
+  promotion_fit_score: number;
+  suggested_campaign_id: string;
+  category: string | null;
+  bio: string | null;
+  suggested_campaign_reason: string | null;
+}
+
+/** All companies with autopilot enabled AND the master system enabled, returning
+ *  only fields needed by the sweep. Gating on both makes Autopilot a strict
+ *  subset of System — turning System off guarantees the sweep is a no-op. */
+export async function listAutoEnabledCompanies(): Promise<Array<Pick<Company,
+  | 'id' | 'name' | 'auto_add_enabled' | 'auto_add_min_fit_score'
+  | 'auto_add_daily_limit' | 'auto_add_run_hour_utc' | 'auto_add_digest_email'
+>>> {
+  const supabase = getSupabaseClient();
+  const { data, error } = await supabase
+    .from('companies')
+    .select('id, name, auto_add_enabled, auto_add_min_fit_score, auto_add_daily_limit, auto_add_run_hour_utc, auto_add_digest_email')
+    .eq('auto_add_enabled', true)
+    .eq('system_enabled', true);
+  if (error) throw error;
+  return data || [];
+}
+
+/**
+ * Fetch up to `limit` leads eligible for auto-add, sorted by fit score desc then recency.
+ * A lead is eligible when it has a suggested campaign, valid email + name,
+ * a fit score at or above the configured threshold, and is not yet routed/skipped.
+ */
+export async function getEligibleLeadsForAutoAdd(
+  companyId: string,
+  minFitScore: number,
+  limit: number
+): Promise<AutoAddEligibleLead[]> {
+  const supabase = getSupabaseClient();
+  // Narrow by company_id via the suggested campaign's company (leads table has no direct company_id).
+  // Pull candidate leads with a suggested campaign and filter at the DB level as much as possible.
+  const { data, error } = await supabase
+    .from('leads')
+    .select(`
+      id, email, full_name, promotion_fit_score, suggested_campaign_id,
+      category, bio, suggested_campaign_reason,
+      campaigns:suggested_campaign_id ( company_id )
+    `)
+    .not('suggested_campaign_id', 'is', null)
+    .neq('campaign_status', 'routed')
+    .neq('campaign_status', 'skipped')
+    .gte('promotion_fit_score', minFitScore)
+    .not('email', 'is', null)
+    .not('full_name', 'is', null)
+    .order('promotion_fit_score', { ascending: false })
+    .order('created_at', { ascending: false })
+    .limit(limit * 4); // over-fetch for client-side company filter then cap
+
+  if (error) throw error;
+
+  const rows = (data || []) as unknown as Array<AutoAddEligibleLead & { campaigns?: { company_id: string } | null }>;
+  return rows
+    .filter((r) => r.campaigns?.company_id === companyId)
+    .filter((r) => r.email?.trim() && r.full_name?.trim())
+    .slice(0, limit)
+    .map(({ campaigns: _c, ...rest }) => rest);
+}
+
+/** Count of remaining Ready-to-Add leads at or above a fit threshold, used in digest footer. */
+export async function countReadyToAddLeads(companyId: string, minFitScore: number): Promise<number> {
+  const supabase = getSupabaseClient();
+  const { data, error } = await supabase
+    .from('leads')
+    .select('id, campaigns:suggested_campaign_id ( company_id )')
+    .not('suggested_campaign_id', 'is', null)
+    .neq('campaign_status', 'routed')
+    .neq('campaign_status', 'skipped')
+    .gte('promotion_fit_score', minFitScore)
+    .not('email', 'is', null)
+    .not('full_name', 'is', null);
+  if (error) throw error;
+  const rows = (data || []) as unknown as Array<{ campaigns?: { company_id: string } | null }>;
+  return rows.filter((r) => r.campaigns?.company_id === companyId).length;
+}
+
+export async function createAutoAddRun(params: {
+  companyId: string;
+  minFitScore: number;
+  dailyLimit: number;
+  trigger: 'cron' | 'manual';
+}): Promise<AutoAddRun> {
+  const supabase = getSupabaseClient();
+  const { data, error } = await supabase
+    .from('auto_add_runs')
+    .insert({
+      company_id: params.companyId,
+      min_fit_score: params.minFitScore,
+      daily_limit: params.dailyLimit,
+      trigger: params.trigger,
+    })
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+export async function completeAutoAddRun(
+  runId: string,
+  updates: {
+    leads_considered?: number;
+    leads_added?: number;
+    leads_skipped?: number;
+    breakdown?: AutoAddRunBreakdownEntry[];
+    added_lead_ids?: string[];
+    skip_reasons?: Record<string, number>;
+    digest_sent?: boolean;
+    digest_error?: string | null;
+    error?: string | null;
+  }
+): Promise<void> {
+  const supabase = getSupabaseClient();
+  const { error } = await supabase
+    .from('auto_add_runs')
+    .update({ ...updates, run_completed_at: new Date().toISOString() })
+    .eq('id', runId);
+  if (error) throw error;
+}
+
+export async function getRecentAutoAddRuns(companyId: string, limit = 10): Promise<AutoAddRun[]> {
+  const supabase = getSupabaseClient();
+  const { data, error } = await supabase
+    .from('auto_add_runs')
+    .select()
+    .eq('company_id', companyId)
+    .order('run_started_at', { ascending: false })
+    .limit(limit);
+  if (error) throw error;
+  return data || [];
 }
