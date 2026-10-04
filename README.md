@@ -2,7 +2,11 @@
 
 # autogtm
 
-**autogtm is an open-source AI GTM engine that runs cold outbound on autopilot.**
+**autogtm is an open-source AI GTM engine that runs cold outbound on autopilot.** ⚡
+
+[![Watch the autogtm product demo](docs/explainer/poster.png)](https://zthpkrurmodfjyzoqmuc.supabase.co/storage/v1/object/public/social-images/demo-video/autogtm-explainer.mp4)
+
+A 78-second walkthrough of the live app: lead briefs in, enriched and fit-scored leads out, per-lead draft campaigns sent through Instantly by hand or by Autopilot.
 
 Describe your target audience in plain English with optional targeted briefs, and autogtm discovers leads daily, enriches them with AI, creates tailored email campaigns, and sends via Instantly. System on, autopilot on, you sleep.
 
@@ -27,7 +31,7 @@ Describe your target audience in plain English with optional targeted briefs, an
 | Toggle               | What it does                                                                                                                                                                                                                            |
 | -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **System ON/OFF**    | Master switch. When OFF, nothing runs. No searches, no enrichment, no campaigns. Turning this off also pauses Autopilot.                                                                                                                |
-| **Autopilot ON/OFF** | When ON, every day at 10am ET the top N Ready-to-Add leads (configurable fit-score threshold + daily limit) are auto-added to their suggested campaigns and a digest email is sent summarizing the run. Configure in the Autopilot tab. |
+| **Autopilot ON/OFF** ⚡ | When ON, every day at 10am ET the top N Ready-to-Add leads (configurable fit-score threshold + daily limit) are auto-added to their suggested campaigns and a digest email is sent summarizing the run. Configure in the Autopilot tab. |
 
 
 ### Daily schedule
