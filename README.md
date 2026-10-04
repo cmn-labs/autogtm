@@ -1,149 +1,74 @@
-
-
 # autogtm
 
-**autogtm is an open-source AI GTM engine that runs cold outbound on autopilot.**
+An open-source GTM engine for cold outbound. You describe the buyer in plain English. autogtm searches, scores the leads, writes a sequence, and sends it through Instantly. With Autopilot on, the 10:00 AM ET sweep sends the top leads on its own.
 
-[![Watch the autogtm product demo](docs/explainer/poster.png)](docs/explainer/autogtm-explainer.mp4)
+[<img src="docs/explainer/poster.png" alt="Play the one-minute autogtm demo" width="100%">](https://zthpkrurmodfjyzoqmuc.supabase.co/storage/v1/object/public/social-images/demo-video/autogtm-explainer.mp4)
 
-A 78-second walkthrough of the live app: lead briefs in, enriched and fit-scored leads out, per-lead draft campaigns sent through Instantly by hand or by Autopilot.
+Click the poster to play. 1:18, recorded on a live account.
 
-Describe your target audience in plain English with optional targeted briefs, and autogtm discovers leads daily, enriches them with AI, creates tailored email campaigns, and sends via Instantly. System on, autopilot on, you sleep.
+## How a lead gets sent
 
----
+1. Fill in a Company Profile so search has a company to work from. Add a Lead Brief when you want a specific kind of person ("acting coaches on TikTok with 10k+ followers"). Queue the brief for the morning run, or choose Run now.
+2. At 8:30 AM ET, queued briefs become search queries. At 9:00 AM ET, Exa runs them and returns people.
+3. Each lead gets a bio, social links, audience size, expertise tags, and a 1–10 fit score with a written reason.
+4. Each lead also gets a draft multi-step sequence. You click Create and Start Campaign, or you leave it for Autopilot.
+5. At 10:00 AM ET, with Autopilot on, the top N Ready-to-Add leads above your fit-score floor are added to their campaigns. A digest lists what was added and to which campaign.
+6. Instantly status and analytics sync every hour. At 2:00 PM ET a second digest covers leads found, emails sent, opens, and replies.
 
-## How it works
+When no new briefs are waiting, exploration mode writes its own queries so the next morning still has searches to run.
 
-1. **You set context** — fill in the Company Profile so the AI can search broadly. Optionally add **Lead Briefs** to pinpoint specific kinds of leads ("acting coaches on TikTok with 10k+ followers").
-2. **Choose execution mode per brief**:
-  - `Queue`: picked up by scheduled generation/run.
-  - `Run now`: generates and starts search immediately.
-3. **AI generates search queries** from your context + briefs.
-4. **Exa runs search and extracts leads** with enrichment hints.
-5. **AI enriches leads** (bio, fit score, contact context).
-6. **AI creates a draft campaign per lead** for review.
-7. **Approve and send** — either you manually review and click "Create and Start Campaign", or **Autopilot** sweeps the backlog daily at 10am ET and sends the top N qualifying leads on its own.
-8. **Instantly status + analytics sync hourly**; daily digest summarizes what went out.
+Fresh-copy Autopilot can rewrite a draft against the lead's bio right before the send, so a sequence written earlier does not go out stale.
 
-### Controls
+System off stops search, enrichment, campaigns, and Autopilot. Each company has its own switch, and one dashboard can hold several companies.
 
+## Schedule
 
-| Toggle               | What it does                                                                                                                                                                                                                            |
-| -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **System ON/OFF**    | Master switch. When OFF, nothing runs. No searches, no enrichment, no campaigns. Turning this off also pauses Autopilot.                                                                                                                |
-| **Autopilot ON/OFF** | When ON, every day at 10am ET the top N Ready-to-Add leads (configurable fit-score threshold + daily limit) are auto-added to their suggested campaigns and a digest email is sent summarizing the run. Configure in the Autopilot tab. |
+Times are America/New_York.
 
+| When | What runs |
+| --- | --- |
+| 8:30 AM | Queued briefs become search queries |
+| 9:00 AM | Exa search, then enrichment |
+| 10:00 AM | Autopilot sweep and its digest |
+| Hourly | Instantly status and analytics |
+| 2:00 PM | Discovery digest |
 
-### Daily schedule
+## Run it
 
-
-| Time        | What happens                                                                          |
-| ----------- | ------------------------------------------------------------------------------------- |
-| 8:30 AM     | Generate queued search queries from briefs and company context                        |
-| 9:00 AM     | Run searches, discover and enrich leads                                               |
-| 10:00 AM ET | **Autopilot sweep** — auto-add top N Ready-to-Add leads + digest email (when enabled) |
-| Hourly      | Sync campaign status and analytics from Instantly                                     |
-| 2:00 PM ET  | Send daily discovery digest email                                                     |
-
-
----
-
-## Features
-
-- **AI lead discovery:** Exa.ai websets find people matching your natural-language description.
-- **AI enrichment:** Bio, social links, audience size, expertise tags, and a 1-10 fit score with reasoning.
-- **AI email copywriting:** Personalized multi-step sequences generated per lead draft.
-- **Campaign management:** Draft-first campaigns with controlled start in Instantly.ai.
-- **System + Autopilot toggles:** Company-level master switch plus a daily Autopilot sweep that auto-adds the top N qualifying leads each morning (configurable daily limit, minimum fit score, and digest email).
-- **Fresh-copy Autopilot:** Optional "regenerate draft before adding" — rewrites each draft's sequence against the lead's bio/expertise right before sending so stale templated copy never goes out.
-- **Exploration mode:** When no new briefs exist, AI generates creative queries to keep pipeline coverage fresh.
-- **Daily digests:** Two summary emails — a per-company Autopilot digest (what was auto-added and to which campaigns) and a global discovery digest (leads found, emails sent, opens, replies).
-- **Multi-company:** Manage multiple company profiles from a single dashboard.
-
-## Stack
-
-
-| Layer           | Technology                                                                          |
-| --------------- | ----------------------------------------------------------------------------------- |
-| Framework       | [Next.js 15](https://nextjs.org) (App Router)                                       |
-| Frontend        | React 19, [Tailwind CSS](https://tailwindcss.com), [Radix UI](https://radix-ui.com) |
-| Database + Auth | [Supabase](https://supabase.com) (PostgreSQL + Auth)                                |
-| Background Jobs | [Inngest](https://inngest.com)                                                      |
-| Lead Discovery  | [Exa.ai](https://exa.ai) (Websets API)                                              |
-| Email Sending   | [Instantly.ai](https://instantly.ai)                                                |
-| AI              | [OpenAI](https://openai.com) (GPT-4.1 / GPT-5-mini)                                 |
-| Digest Emails   | [Resend](https://resend.com)                                                        |
-
-
----
-
-## Getting Started
-
-### Prerequisites
-
-Accounts needed:
-
-- [Supabase](https://supabase.com) — database and authentication
-- [Exa.ai](https://exa.ai) — lead discovery via Websets API
-- [Instantly.ai](https://instantly.ai) — email campaign sending
-- [OpenAI](https://platform.openai.com) — AI enrichment and generation
-- [Inngest](https://inngest.com) — background job scheduling
-- [Resend](https://resend.com) — daily digest emails (optional)
-
-Locally: Node.js 18+ and npm.
-
-### Setup
+Accounts: [Supabase](https://supabase.com), [Exa](https://exa.ai), [Instantly](https://instantly.ai), [OpenAI](https://platform.openai.com), and [Inngest](https://inngest.com). [Resend](https://resend.com) is only for the digests. Node.js 18 or newer.
 
 ```bash
-# Clone and install
-git clone https://github.com/your-org/autogtm.git
+git clone https://github.com/cmn-labs/autogtm.git
 cd autogtm
 npm install
-
-# Configure environment
 cp apps/autogtm/.env.example apps/autogtm/.env.local
-# Fill in values in .env.local
-
-# Run
 npm run dev
 ```
 
-The app runs at [http://localhost:3200](http://localhost:3200).
-
-For background jobs, run the Inngest dev server in a separate terminal:
+The app is at [http://localhost:3200](http://localhost:3200). In a second terminal:
 
 ```bash
 npx inngest-cli@latest dev
 ```
 
-**Supabase Setup**
+In the Supabase SQL editor, run [schema.sql](./schema.sql). That creates the tables, indexes, RLS policies, and helper functions. On an existing project, apply [migrations/](./migrations/) instead. Those files are safe to re-run.
 
-Create a new Supabase project at [supabase.com](https://supabase.com), then:
+## Stack
 
-1. Open your project dashboard
-2. Go to **SQL Editor**
-3. Paste the contents of `[schema.sql](./schema.sql)` and run it
+| | |
+| --- | --- |
+| App | [Next.js 15](https://nextjs.org) (App Router), React 19, [Tailwind CSS](https://tailwindcss.com), [Radix UI](https://radix-ui.com) |
+| Data and auth | [Supabase](https://supabase.com) |
+| Jobs | [Inngest](https://inngest.com) |
+| Search | [Exa](https://exa.ai) Websets |
+| Sending | [Instantly](https://instantly.ai) |
+| Models | [OpenAI](https://openai.com) (GPT-4.1 / GPT-5-mini) |
+| Digests | [Resend](https://resend.com) |
 
-This creates all required tables, indexes, RLS policies, and helper functions.
+## Deploy
 
-If you already have a Supabase project from an earlier version, apply incremental migrations from `[migrations/](./migrations/)` instead — they're safe to re-run (`IF NOT EXISTS` guarded).
-
-
-
-## Deployment
-
-autogtm is a standard Next.js app. Deploy to any platform that supports it:
-
-- **Vercel** — recommended, zero-config Next.js deployment
-
-Make sure to:
-
-1. Set all environment variables in your hosting platform
-2. Connect your Inngest app to receive webhooks at `/api/inngest`
-3. Ensure your Supabase project is on a paid plan if you need higher limits
+Any Next.js host works. On Vercel, set the environment variables, point Inngest at `/api/inngest`, and use a paid Supabase plan if you need the higher limits.
 
 ## License
 
-Licensed under [AGPL-3.0](LICENSE).
-
-**TL;DR:** You can use it, change it, and ship it; if you run a modified version as a service (e.g. a hosted app), you must make that version’s source code available to your users.
+[AGPL-3.0](LICENSE). You can use it, change it, and ship it. If you run a modified version as a service, that version's source has to be available to its users.
