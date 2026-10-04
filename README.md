@@ -6,8 +6,6 @@
 
 [![Watch the autogtm product demo](docs/explainer/poster.png)](https://zthpkrurmodfjyzoqmuc.supabase.co/storage/v1/object/public/social-images/demo-video/autogtm-explainer.mp4)
 
-A 78-second walkthrough of the live app: lead briefs in, enriched and fit-scored leads out, per-lead draft campaigns sent through Instantly by hand or by Autopilot.
-
 Describe your target audience in plain English with optional targeted briefs, and autogtm discovers leads daily, enriches them with AI, creates tailored email campaigns, and sends via Instantly. System on, autopilot on, you sleep.
 
 ---
