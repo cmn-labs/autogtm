@@ -27,7 +27,7 @@ export async function extractEmailFromEnrichmentData(enrichmentData: unknown): P
   const openai = getOpenAIClient();
 
   const response = await openai.chat.completions.create({
-    model: 'gpt-4.1-nano',
+    model: 'gpt-5.6-luna',
     messages: [
       {
         role: 'system',
@@ -36,7 +36,6 @@ export async function extractEmailFromEnrichmentData(enrichmentData: unknown): P
       { role: 'user', content: dataStr.slice(0, 3000) },
     ],
     response_format: { type: 'json_object' },
-    temperature: 0,
   });
 
   const content = response.choices[0]?.message?.content;
