@@ -1,8 +1,15 @@
 'use client';
 
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { Loader2, Zap, Play, Sparkles, CheckCircle2, AlertTriangle, Clock, Info } from 'lucide-react';
+import { Loader2, Zap, Play, Sparkles, CheckCircle2, AlertTriangle, Clock, Info, ShieldCheck } from 'lucide-react';
 import { useToast } from '@/components/ui/use-toast';
+
+export interface PreclearedHold {
+	kind: string;
+	message: string;
+	fix_url: string | null;
+	at: string;
+}
 
 export interface AutopilotCompany {
 	id: string;
@@ -13,7 +20,43 @@ export interface AutopilotCompany {
 	auto_add_run_hour_utc?: number;
 	auto_add_digest_email?: string | null;
 	auto_add_regenerate_drafts?: boolean;
+	// Precleared compliance check (optional, off by default)
+	precleared_enabled?: boolean;
+	precleared_sender_country?: string;
+	precleared_address_source?: string;
+	precleared_prospect_country?: string | null;
+	precleared_last_hold?: PreclearedHold | null;
 }
+
+const PRECLEARED_SENDER_COUNTRIES: Array<{ value: string; label: string }> = [
+	{ value: 'GB', label: 'United Kingdom (GB)' },
+	{ value: 'US', label: 'United States (US)' },
+	{ value: 'AE', label: 'United Arab Emirates (AE)' },
+];
+
+const PRECLEARED_ADDRESS_SOURCES: Array<{ value: string; label: string }> = [
+	{ value: 'unknown', label: 'Unknown' },
+	{ value: 'published', label: 'Published (on their website or profile)' },
+	{ value: 'scraped', label: 'Scraped (collected by a tool)' },
+	{ value: 'bought', label: 'Bought (from a list vendor)' },
+	{ value: 'given', label: 'Given (they handed it to you)' },
+];
+
+// A hold not seen for this long is stale: Precleared's allowance resets daily.
+const PRECLEARED_HOLD_MAX_AGE_MS = 26 * 60 * 60 * 1000;
+
+const PRECLEARED_FIX_LABELS: Record<string, string> = {
+	daily_limit: 'Get a free key',
+	key_rejected: 'Get a new key',
+	out_of_checks: 'Buy checks',
+};
+
+// Sweep skip reasons that read better than their snake_case key.
+const SKIP_REASON_LABELS: Record<string, string> = {
+	compliance_hold: 'held by Precleared (see Skipped)',
+	compliance_check_unavailable: 'waiting for the Precleared check',
+};
+const skipReasonLabel = (reason: string) => SKIP_REASON_LABELS[reason] || reason.replace(/_/g, ' ');
 
 interface AutoAddRun {
 	id: string;
@@ -72,6 +115,7 @@ export function AutopilotTab({ company, onCompanyUpdated }: AutopilotTabProps) {
 	const [minFitScore, setMinFitScore] = useState(company.auto_add_min_fit_score || 7);
 	const [dailyLimit, setDailyLimit] = useState(company.auto_add_daily_limit ?? 5);
 	const [digestEmail, setDigestEmail] = useState(company.auto_add_digest_email || '');
+	const [prospectCountry, setProspectCountry] = useState(company.precleared_prospect_country || '');
 
 	const [savedFields, setSavedFields] = useState<Record<string, boolean>>({});
 	const savedTimers = useRef<Record<string, NodeJS.Timeout>>({});
@@ -82,13 +126,18 @@ export function AutopilotTab({ company, onCompanyUpdated }: AutopilotTabProps) {
 
 	const runHourUtc = company.auto_add_run_hour_utc ?? 14;
 	const enabled = company.auto_add_enabled;
+	const preclearedEnabled = company.precleared_enabled === true;
+	const preclearedHold = company.precleared_last_hold ?? null;
+	const preclearedHoldActive =
+		preclearedEnabled && !!preclearedHold && Date.now() - Date.parse(preclearedHold.at) < PRECLEARED_HOLD_MAX_AGE_MS;
 
 	// Keep local form values aligned with upstream company prop changes.
 	useEffect(() => {
 		setMinFitScore(company.auto_add_min_fit_score || 7);
 		setDailyLimit(company.auto_add_daily_limit ?? 5);
 		setDigestEmail(company.auto_add_digest_email || '');
-	}, [company.id, company.auto_add_min_fit_score, company.auto_add_daily_limit, company.auto_add_digest_email]);
+		setProspectCountry(company.precleared_prospect_country || '');
+	}, [company.id, company.auto_add_min_fit_score, company.auto_add_daily_limit, company.auto_add_digest_email, company.precleared_prospect_country]);
 
 	const pingSaved = (key: string) => {
 		setSavedFields((s) => ({ ...s, [key]: true }));
@@ -120,6 +169,31 @@ export function AutopilotTab({ company, onCompanyUpdated }: AutopilotTabProps) {
 		[company.id, onCompanyUpdated, toast]
 	);
 
+	// The hold banner reads companies.precleared_last_hold, which a run writes (or
+	// clears). It is re-read whenever the run history is, so a hold recorded by
+	// Run Now shows without a page reload, and clears again once a check succeeds.
+	// onCompanyUpdated is read through a ref: the parent passes a new function on
+	// every render, and putting it in loadRuns's dependencies would refetch on each one.
+	const onCompanyUpdatedRef = useRef(onCompanyUpdated);
+	onCompanyUpdatedRef.current = onCompanyUpdated;
+	const preclearedHoldRef = useRef(preclearedHold);
+	preclearedHoldRef.current = preclearedHold;
+	const refreshPreclearedHold = useCallback(async () => {
+		if (!preclearedEnabled) return;
+		try {
+			const res = await fetch(`/api/companies/${company.id}`);
+			if (!res.ok) return;
+			const { company: fresh } = await res.json();
+			if (!fresh || !('precleared_last_hold' in fresh)) return;
+			const hold = fresh.precleared_last_hold ?? null;
+			if (JSON.stringify(hold) !== JSON.stringify(preclearedHoldRef.current)) {
+				onCompanyUpdatedRef.current({ precleared_last_hold: hold });
+			}
+		} catch {
+			// The banner keeps showing the last known state.
+		}
+	}, [company.id, preclearedEnabled]);
+
 	const loadRuns = useCallback(async () => {
 		setRunsLoading(true);
 		try {
@@ -128,10 +202,11 @@ export function AutopilotTab({ company, onCompanyUpdated }: AutopilotTabProps) {
 				const { runs: data } = await res.json();
 				setRuns(data || []);
 			}
+			await refreshPreclearedHold();
 		} finally {
 			setRunsLoading(false);
 		}
-	}, [company.id]);
+	}, [company.id, refreshPreclearedHold]);
 
 	useEffect(() => { loadRuns(); }, [loadRuns]);
 
@@ -172,6 +247,41 @@ export function AutopilotTab({ company, onCompanyUpdated }: AutopilotTabProps) {
 		const current = company.auto_add_digest_email || '';
 		if (trimmed === current) return;
 		await patchCompany({ auto_add_digest_email: trimmed || null }, 'digestEmail');
+	};
+
+	const handleTogglePrecleared = async () => {
+		const next = !preclearedEnabled;
+		const ok = await patchCompany({ precleared_enabled: next }, 'precleared');
+		if (!ok) return;
+		// Switching the check off ends any hold it recorded (the server clears it too).
+		if (!next) onCompanyUpdated({ precleared_last_hold: null });
+		toast({
+			title: next ? 'Compliance check ON' : 'Compliance check OFF',
+			description: next
+				? 'Each new lead is checked with Precleared before it is added to a campaign.'
+				: 'Leads are added without a Precleared check.',
+		});
+	};
+
+	const handleSenderCountryChange = async (value: string) => {
+		if (value === (company.precleared_sender_country || 'GB')) return;
+		await patchCompany({ precleared_sender_country: value }, 'preclearedSender');
+	};
+
+	const handleAddressSourceChange = async (value: string) => {
+		if (value === (company.precleared_address_source || 'unknown')) return;
+		await patchCompany({ precleared_address_source: value }, 'preclearedSource');
+	};
+
+	const handleProspectCountryBlur = async () => {
+		const code = prospectCountry.trim().toUpperCase();
+		if (code && !/^[A-Z]{2}$/.test(code)) {
+			toast({ title: 'Not saved', description: 'Use a two-letter country code such as GB or US, or leave it empty.' });
+			return;
+		}
+		if (code !== prospectCountry) setProspectCountry(code);
+		if ((code || null) === (company.precleared_prospect_country || null)) return;
+		await patchCompany({ precleared_prospect_country: code || null }, 'preclearedProspect');
 	};
 
 	const handleRunNow = async () => {
@@ -334,6 +444,134 @@ export function AutopilotTab({ company, onCompanyUpdated }: AutopilotTabProps) {
 				</div>
 			)}
 
+			{/* Compliance check (Precleared): applies to manual adds and the sweep, so it is shown whether Autopilot is on or off */}
+			<div className="rounded-lg border border-gray-200 bg-white p-6">
+				<div className="flex items-start justify-between gap-6">
+					<div className="flex-1">
+						<div className="flex items-center gap-2">
+							<ShieldCheck className={`h-4 w-4 ${preclearedEnabled ? 'text-sky-600' : 'text-gray-400'}`} />
+							<h3 className="text-base font-semibold text-gray-900">Compliance check (Precleared)</h3>
+							<span className={`text-xs font-semibold ${preclearedEnabled ? 'text-sky-700' : 'text-gray-500'}`}>{preclearedEnabled ? 'On' : 'Off'}</span>
+						</div>
+						<p className="text-sm text-gray-500 mt-1">
+							Before a lead is added to an Instantly campaign, ask{' '}
+							<a href="https://precleared.dev" target="_blank" rel="noopener noreferrer" className="underline hover:text-gray-700">Precleared</a>{' '}
+							whether a cold email to that address is allowed (UK PECR, US CAN-SPAM, Canada&apos;s CASL, Germany&apos;s UWG, France, Australia, Ireland, the Netherlands).
+							Anything other than <code className="text-xs">ok_to_email</code> holds the lead as Skipped with the rule and the next step. Applies to manual adds and the Autopilot sweep. Off by default.
+						</p>
+					</div>
+					<div className="flex items-center gap-3 shrink-0">
+						<SavedPing active={!!savedFields.precleared} />
+						<button
+							role="switch"
+							aria-checked={preclearedEnabled}
+							aria-label="Compliance check"
+							onClick={handleTogglePrecleared}
+							className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors ${preclearedEnabled ? 'bg-sky-600' : 'bg-gray-300'}`}
+						>
+							<span className={`inline-block h-5 w-5 transform rounded-full bg-white transition-transform ${preclearedEnabled ? 'translate-x-5' : 'translate-x-0.5'}`} />
+						</button>
+					</div>
+				</div>
+
+				{preclearedHoldActive && preclearedHold && (
+					<div className="mt-4 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+						<div className="flex items-start gap-2">
+							<AlertTriangle className="h-4 w-4 mt-0.5 shrink-0 text-amber-600" />
+							<div>
+								<p className="font-medium">Cold email is on hold: Precleared could not check the last lead.</p>
+								<p className="mt-1 text-amber-800">{preclearedHold.message}</p>
+								<p className="mt-1 text-xs text-amber-700">
+									Last seen {new Date(preclearedHold.at).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}. Held leads stay in Ready to Add; the hold clears on the next answered check.
+									{preclearedHold.fix_url && (
+										<>
+											{' '}
+											<a href={preclearedHold.fix_url} target="_blank" rel="noopener noreferrer" className="font-medium underline">
+												{PRECLEARED_FIX_LABELS[preclearedHold.kind] || 'Fix it'}
+											</a>
+										</>
+									)}
+								</p>
+							</div>
+						</div>
+					</div>
+				)}
+
+				{preclearedEnabled && (
+					<div className="mt-5 space-y-5 border-t border-gray-100 pt-5">
+						<div className="flex items-start justify-between gap-6">
+							<div className="flex-1">
+								<label htmlFor="precleared-sender-country" className="text-sm font-medium text-gray-900">Sender country</label>
+								<p className="text-xs text-gray-500 mt-0.5">Where you send from. Decides which of your own rules apply.</p>
+							</div>
+							<div className="flex items-center gap-3">
+								<select
+									id="precleared-sender-country"
+									value={company.precleared_sender_country || 'GB'}
+									onChange={(e) => handleSenderCountryChange(e.target.value)}
+									className="px-3 py-1.5 text-sm border border-gray-200 rounded-md bg-white focus:outline-none focus:ring-2 focus:ring-sky-400"
+								>
+									{PRECLEARED_SENDER_COUNTRIES.map((c) => (
+										<option key={c.value} value={c.value}>{c.label}</option>
+									))}
+								</select>
+								<SavedPing active={!!savedFields.preclearedSender} />
+							</div>
+						</div>
+
+						<div className="flex items-start justify-between gap-6">
+							<div className="flex-1">
+								<label htmlFor="precleared-address-source" className="text-sm font-medium text-gray-900">Address source</label>
+								<p className="text-xs text-gray-500 mt-0.5">How the email addresses were obtained. Canada&apos;s CASL and some other rules turn on this. Leads found by autogtm are usually published or scraped.</p>
+							</div>
+							<div className="flex items-center gap-3">
+								<select
+									id="precleared-address-source"
+									value={company.precleared_address_source || 'unknown'}
+									onChange={(e) => handleAddressSourceChange(e.target.value)}
+									className="px-3 py-1.5 text-sm border border-gray-200 rounded-md bg-white focus:outline-none focus:ring-2 focus:ring-sky-400"
+								>
+									{PRECLEARED_ADDRESS_SOURCES.map((s) => (
+										<option key={s.value} value={s.value}>{s.label}</option>
+									))}
+								</select>
+								<SavedPing active={!!savedFields.preclearedSource} />
+							</div>
+						</div>
+
+						<div className="flex items-start justify-between gap-6">
+							<div className="flex-1">
+								<label htmlFor="precleared-prospect-country" className="text-sm font-medium text-gray-900">Prospects&apos; country (optional)</label>
+								<p className="text-xs text-gray-500 mt-0.5">Two-letter code, for example GB or US. Used only when Precleared cannot work out a lead&apos;s country from the address, company records or website. Set it if all your leads are in one country; otherwise leave it empty.</p>
+							</div>
+							<div className="flex items-center gap-3">
+								<input
+									id="precleared-prospect-country"
+									type="text"
+									maxLength={2}
+									value={prospectCountry}
+									onChange={(e) => setProspectCountry(e.target.value.toUpperCase())}
+									onBlur={handleProspectCountryBlur}
+									className="w-20 px-3 py-1.5 text-sm text-center uppercase border border-gray-200 rounded-md focus:outline-none focus:ring-2 focus:ring-sky-400"
+								/>
+								<SavedPing active={!!savedFields.preclearedProspect} />
+							</div>
+						</div>
+
+						<div className="rounded-md bg-gray-50 border border-gray-100 p-3 text-xs text-gray-600 space-y-2">
+							<p>
+								<strong className="text-gray-800">What is sent to precleared.dev:</strong> the lead&apos;s email address, your sender country, the address source, your company description (first 200 characters) and, if set, the prospects&apos; country. Never the email copy, never the lead&apos;s name or bio. Verdicts are cached for 30 days per address; changing these settings forces a fresh check. The verdict is decision support with sources, not legal advice.
+							</p>
+							<p>
+								<strong className="text-gray-800">Free key:</strong> without <code>PRECLEARED_API_KEY</code>, Precleared allows 10 checks a day shared by every app on the same network address (on Vercel that includes other people&apos;s apps). A free key gives this install its own 25 a day, 100 a day for the first 14 days:{' '}
+								<a href="https://precleared.dev/get-key" target="_blank" rel="noopener noreferrer" className="underline hover:text-gray-800">precleared.dev/get-key</a>.
+								If a check cannot be made, the lead stays in Ready to Add and a notice appears here and in the digest.
+							</p>
+						</div>
+					</div>
+				)}
+			</div>
+
 			{/* Recent runs */}
 			<div className="rounded-lg border border-gray-200 bg-white p-6">
 				<div className="mb-4 flex items-start justify-between gap-4">
@@ -399,7 +637,7 @@ export function AutopilotTab({ company, onCompanyUpdated }: AutopilotTabProps) {
 									<div className="mt-1.5 ml-6 text-xs text-amber-700">
 										Skipped {run.leads_skipped}
 										{Object.keys(run.skip_reasons).length > 0 && (
-											<>: {Object.entries(run.skip_reasons).map(([r, n]) => `${n} × ${r.replace(/_/g, ' ')}`).join(', ')}</>
+											<>: {Object.entries(run.skip_reasons).map(([r, n]) => `${n} × ${skipReasonLabel(r)}`).join(', ')}</>
 										)}
 									</div>
 								)}

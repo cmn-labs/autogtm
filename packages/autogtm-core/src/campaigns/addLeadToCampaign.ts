@@ -7,6 +7,7 @@ import {
 } from '../db/autogtmDbCalls';
 import { sendDraftCampaignForLead } from './createCampaignForPersona';
 import { regenerateEmailSequenceWithFeedback } from '../ai/generateEmailCopy';
+import { applyPreclearedCheck, companyUnavailableClearance, PreclearedHoldError } from '../compliance/precleared';
 
 /** Default feedback used when Autopilot regenerates stale draft copy before sending. */
 const AUTO_REGENERATE_FEEDBACK =
@@ -106,13 +107,28 @@ export async function regenerateAndSaveDraftEmails(params: {
 
 /** Result of attempting to add a single lead to its suggested campaign. */
 export type AddLeadToCampaignResult =
-  | { ok: true; action: 'sent_draft' | 'added_to_active'; campaignId: string; regenerated?: boolean }
-  | { ok: false; reason: 'missing_email' | 'missing_name' | 'campaign_not_found' | 'campaign_full' | 'campaign_not_accepting' | 'lead_not_found' | 'error'; message?: string };
+  | { ok: true; action: 'sent_draft' | 'added_to_active'; campaignId: string; regenerated?: boolean; preclearedReceiptId?: string | null }
+  | {
+      ok: false;
+      reason:
+        | 'missing_email' | 'missing_name' | 'campaign_not_found' | 'campaign_full' | 'campaign_not_accepting' | 'lead_not_found'
+        /** Precleared said anything other than ok_to_email: the lead is now Skipped with the reason in `message`. */
+        | 'compliance_hold'
+        /** Precleared could not be asked: the lead stays in Ready to Add; `message` says what fixes it. */
+        | 'compliance_check_unavailable'
+        | 'error';
+      message?: string;
+      fixUrl?: string | null;
+    };
 
 /**
  * Shared core routine for routing a single lead into its suggested campaign.
  * Used by both the user-initiated add-to-campaign Inngest job and the
  * daily Auto Add sweep so behavior stays identical across paths.
+ *
+ * When the company's Precleared compliance check is on, the lead is checked
+ * here before either branch pushes it to Instantly (and again, as a cache hit,
+ * inside sendDraftCampaignForLead so the activation route is covered too).
  *
  * Caller is responsible for Inngest step wrapping / retries.
  */
@@ -135,7 +151,7 @@ export async function addLeadToCampaignCore(params: {
 
   const [{ data: lead }, { data: campaign }] = await Promise.all([
     supabase.from('leads').select('email, full_name, title, bio, url, total_audience').eq('id', leadId).single(),
-    supabase.from('campaigns').select('id, instantly_campaign_id, status, is_accepting_leads, leads_count, max_leads').eq('id', campaignId).single(),
+    supabase.from('campaigns').select('id, company_id, instantly_campaign_id, status, is_accepting_leads, leads_count, max_leads').eq('id', campaignId).single(),
   ]);
 
   if (!lead) {
@@ -167,13 +183,40 @@ export async function addLeadToCampaignCore(params: {
     }
   }
 
+  // Optional compliance check (Precleared), one per lead before its first push to
+  // Instantly. The whole company row is read so a database without the
+  // precleared_* columns yet simply reads as "check off". A row that cannot be
+  // loaded at all is different: whether the check is on is unknown, so the lead
+  // is held rather than sent.
+  const { data: company, error: companyError } = await supabase
+    .from('companies')
+    .select('*')
+    .eq('id', campaign.company_id)
+    .single();
+  if (companyError || !company) {
+    const unavailable = companyUnavailableClearance(companyError);
+    if (softFail) return { ok: false, reason: 'compliance_check_unavailable', message: unavailable.message, fixUrl: null };
+    throw new PreclearedHoldError(unavailable);
+  }
+  const clearance = await applyPreclearedCheck({ leadId, email: lead.email, company });
+  if (clearance.status === 'held') {
+    // Not skipped: the lead waits in Ready to Add for the next run.
+    if (softFail) return { ok: false, reason: 'compliance_check_unavailable', message: clearance.message, fixUrl: clearance.fixUrl };
+    throw new PreclearedHoldError(clearance);
+  }
+  if (clearance.status === 'denied') {
+    // Already marked Skipped with "Precleared: <rule> (<source>). <next step>"; a decision, not an error.
+    return { ok: false, reason: 'compliance_hold', message: clearance.message };
+  }
+  const preclearedReceiptId = clearance.status === 'allowed' ? clearance.receiptId || null : null;
+
   if (campaign.status === 'draft' || !campaign.instantly_campaign_id) {
     let regenerated = false;
     if (regenerateDraftFirst) {
       regenerated = await regenerateAndSaveDraftEmails({ campaignId, leadId });
     }
     await sendDraftCampaignForLead({ campaignId, leadId });
-    return { ok: true, action: 'sent_draft', campaignId, regenerated };
+    return { ok: true, action: 'sent_draft', campaignId, regenerated, preclearedReceiptId };
   }
 
   const nameParts = lead.full_name.trim().split(/\s+/);
@@ -193,8 +236,8 @@ export async function addLeadToCampaignCore(params: {
     },
   }]);
 
-  await markLeadRouted(leadId, campaignId);
+  await markLeadRouted(leadId, campaignId, preclearedReceiptId);
   await incrementCampaignLeadCount(campaignId);
 
-  return { ok: true, action: 'added_to_active', campaignId };
+  return { ok: true, action: 'added_to_active', campaignId, preclearedReceiptId };
 }

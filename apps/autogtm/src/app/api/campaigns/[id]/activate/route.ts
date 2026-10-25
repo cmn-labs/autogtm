@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { activateCampaign } from '@autogtm/core/clients/instantly';
 import { sendDraftCampaignForLead } from '@autogtm/core/campaigns/createCampaignForPersona';
+import { isPreclearedHoldError } from '@autogtm/core/compliance/precleared';
 
 export async function POST(
   request: NextRequest,
@@ -46,6 +47,21 @@ export async function POST(
 
     return NextResponse.json({ success: true });
   } catch (error) {
+    if (isPreclearedHoldError(error)) {
+      // The Precleared compliance check held the lead back (or could not be made).
+      // Nothing was created in Instantly; the message says what to do next.
+      const { clearance } = error;
+      return NextResponse.json(
+        {
+          error: 'held',
+          status: clearance.status,
+          message: clearance.message,
+          next_step: clearance.status === 'denied' ? clearance.nextStep : null,
+          fix_url: clearance.status === 'held' ? clearance.fixUrl : null,
+        },
+        { status: 409 }
+      );
+    }
     console.error('Error activating campaign:', error);
     return NextResponse.json({ error: 'Failed to activate campaign' }, { status: 500 });
   }

@@ -30,6 +30,25 @@ Simply describe your target audience in plain English with optional targeted bri
 | -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **System ON/OFF**    | Master switch. When OFF, nothing runs. No searches, no enrichment, no campaigns. Turning this off also pauses Autopilot.                                                                                                                |
 | **Autopilot ON/OFF** ⚡ | When ON, every day at 10am ET the top N Ready-to-Add leads (configurable fit-score threshold + daily limit) are auto-added to their suggested campaigns and a digest email is sent summarizing the run. Configure in the Autopilot tab. |
+| **Compliance check ON/OFF** | Optional, off by default. When ON, each new lead is checked with [Precleared](https://precleared.dev) before it is added to an Instantly campaign, on both the manual path and the Autopilot sweep. Configure in the Autopilot tab. See [Compliance check](#compliance-check-optional-off-by-default). |
+
+
+### Compliance check (optional, off by default)
+
+Turn on **Compliance check** in a company's Autopilot tab and autogtm asks [Precleared](https://precleared.dev) whether a cold email to each new lead is allowed (UK PECR, US CAN-SPAM, Canada's CASL, Germany's UWG, France, Australia, Ireland, the Netherlands) before the lead is added to an Instantly campaign. It runs once per new lead, inside the shared routing core, so the manual "add to campaign" button, the daily Autopilot sweep and the draft campaign "Activate" button are all covered.
+
+- `ok_to_email`: the lead is added as before and the signed receipt id is stored on the lead (`precleared_receipt_id`).
+- `consent_needed`, `blocked` or `unknown`: the lead is not added. It is marked Skipped with `Precleared: <rule> (<source>). <next step>`, so it shows under the Skipped filter and in the Autopilot digest. Once you have fixed the cause (for example set the prospects' country), press Undo on the lead: it goes straight back to Ready to Add and is checked again on the next run.
+- If the check cannot be made (daily allowance used up, key out of checks or rejected, Precleared unreachable, or the company's settings could not be loaded), the lead stays in Ready to Add. The Autopilot tab shows what fixes it and the digest says how many leads are waiting. Nothing is sent unchecked and nothing is dropped silently.
+- Verdicts are cached for 30 days per address (table `precleared_checks`). Changing the sender country, address source, company description or prospects' country forces a fresh check.
+
+Settings per company: sender country (GB, US or AE), address source (published, bought, scraped, given or unknown; leads found by autogtm are usually published or scraped) and an optional prospects' country. Precleared works out each lead's country from the address, company records or the company's website; if all your leads are in one country, set the prospects' country and it is used when none of those show it. Leads whose country cannot be worked out come back `unknown` and are held.
+
+**What is sent to precleared.dev:** the lead's email address, your sender country, the address source, your company description (first 200 characters, as the pitch) and, if set, the prospects' country. Never the email copy, never the lead's name or bio. Nothing is sent to the lead. The verdict is decision support with sources, not legal advice.
+
+**Free key.** Without a key, Precleared allows 10 checks a day shared by every app on the same network address (on Vercel that includes other people's apps), so a keyless install may hit the limit on day one. Get a free key at https://precleared.dev/get-key and set `PRECLEARED_API_KEY`: 25 checks a day, 100 a day for the first 14 days. With the default Autopilot limit of 5 leads a day per company, a free key covers five companies and the first-14-days allowance covers twenty.
+
+**Existing databases:** run `migrations/20261025_precleared.sql` in the Supabase SQL editor. Until then the check simply stays off.
 
 
 ### Daily schedule
@@ -56,6 +75,7 @@ Simply describe your target audience in plain English with optional targeted bri
 - **Fresh-copy Autopilot:** Optional "regenerate draft before adding" — rewrites each draft's sequence against the lead's bio/expertise right before sending so stale templated copy never goes out.
 - **Exploration mode:** When no new briefs exist, AI generates creative queries to keep pipeline coverage fresh.
 - **Daily digests:** Two summary emails — a per-company Autopilot digest (what was auto-added and to which campaigns) and a global discovery digest (leads found, emails sent, opens, replies).
+- **Compliance check (optional):** Ask [Precleared](https://precleared.dev) whether a cold email to each new lead is allowed before it is added to a campaign. Off by default; anything other than `ok_to_email` holds the lead as Skipped with the rule and the next step.
 - **Multi-company:** Manage multiple company profiles from a single dashboard.
 
 ## Stack
@@ -87,6 +107,7 @@ Accounts needed:
 - [OpenAI](https://platform.openai.com) — AI enrichment and generation
 - [Inngest](https://inngest.com) — background job scheduling
 - [Resend](https://resend.com) — daily digest emails (optional)
+- [Precleared](https://precleared.dev) — cold email compliance check (optional; works without an account, free key recommended)
 
 Locally: Node.js 18+ and npm.
 
@@ -124,7 +145,7 @@ Create a new Supabase project at [supabase.com](https://supabase.com), then:
 
 This creates all required tables, indexes, RLS policies, and helper functions.
 
-If you already have a Supabase project from an earlier version, apply incremental migrations from `[migrations/](./migrations/)` instead — they're safe to re-run (`IF NOT EXISTS` guarded).
+If you already have a Supabase project from an earlier version, apply incremental migrations from `[migrations/](./migrations/)` instead — they're safe to re-run (`IF NOT EXISTS` guarded). The optional compliance check needs `migrations/20261025_precleared.sql`.
 
 
 

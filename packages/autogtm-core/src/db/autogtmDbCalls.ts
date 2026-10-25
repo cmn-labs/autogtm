@@ -16,6 +16,8 @@ import type {
   AllowedUser,
   AutoAddRun,
   AutoAddRunBreakdownEntry,
+  PreclearedCheck,
+  PreclearedHold,
 } from '../types';
 import { getCampaignAnalytics } from '../clients/instantly';
 
@@ -369,15 +371,24 @@ export async function incrementCampaignLeadCount(campaignId: string): Promise<vo
   }
 }
 
-export async function markLeadRouted(leadId: string, campaignId: string): Promise<void> {
+/**
+ * Mark a lead as routed into a campaign. When the Precleared check cleared the
+ * lead, its receipt id is stored alongside so the decision can be shown later.
+ */
+export async function markLeadRouted(leadId: string, campaignId: string, preclearedReceiptId?: string | null): Promise<void> {
   const supabase = getSupabaseClient();
+  const updates: Record<string, unknown> = {
+    campaign_id: campaignId,
+    campaign_status: 'routed',
+    campaign_routed_at: new Date().toISOString(),
+  };
+  if (preclearedReceiptId) {
+    updates.precleared_receipt_id = preclearedReceiptId;
+    updates.precleared_checked_at = new Date().toISOString();
+  }
   const { error } = await supabase
     .from('leads')
-    .update({
-      campaign_id: campaignId,
-      campaign_status: 'routed',
-      campaign_routed_at: new Date().toISOString(),
-    })
+    .update(updates)
     .eq('id', leadId);
   if (error) throw error;
 }
@@ -758,4 +769,42 @@ export async function getRecentAutoAddRuns(companyId: string, limit = 10): Promi
     .limit(limit);
   if (error) throw error;
   return data || [];
+}
+
+// ============ Precleared compliance check ============
+
+/** A cached verdict for one address and one set of inputs, or null when there is none. */
+export async function getPreclearedCheck(email: string, inputsHash: string): Promise<PreclearedCheck | null> {
+  const supabase = getSupabaseClient();
+  const { data, error } = await supabase
+    .from('precleared_checks')
+    .select()
+    .eq('email', email)
+    .eq('inputs_hash', inputsHash)
+    .maybeSingle();
+  if (error) throw error;
+  return data;
+}
+
+/** Store a definite verdict. One row per (address, inputs); a fresh verdict replaces an older one. */
+export async function savePreclearedCheck(check: PreclearedCheck): Promise<void> {
+  const supabase = getSupabaseClient();
+  const { error } = await supabase
+    .from('precleared_checks')
+    .upsert(check, { onConflict: 'email,inputs_hash' });
+  if (error) throw error;
+}
+
+/**
+ * Record that cold email for a company is waiting on the Precleared check (or
+ * clear the record with null once a fresh answer has come back). Read by the
+ * Autopilot tab banner and the sweep digest.
+ */
+export async function recordPreclearedHold(companyId: string, hold: PreclearedHold | null): Promise<void> {
+  const supabase = getSupabaseClient();
+  const { error } = await supabase
+    .from('companies')
+    .update({ precleared_last_hold: hold })
+    .eq('id', companyId);
+  if (error) throw error;
 }

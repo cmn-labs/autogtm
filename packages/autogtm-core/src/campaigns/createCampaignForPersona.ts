@@ -14,6 +14,7 @@ import {
   markLeadRouted,
   updateCampaign,
 } from '../db/autogtmDbCalls';
+import { applyPreclearedCheck, companyUnavailableClearance, PreclearedHoldError } from '../compliance/precleared';
 import type { Company, Campaign } from '../types';
 
 /** Convert plain text email body to HTML for Instantly */
@@ -94,6 +95,14 @@ export async function createDraftCampaignForLead(
   return campaignRecord;
 }
 
+/**
+ * Create and activate the Instantly campaign for a draft, then add its lead.
+ *
+ * Throws PreclearedHoldError when the company's Precleared compliance check is on
+ * and the lead may not go out (or could not be checked). Reached through
+ * addLeadToCampaignCore the check is a cache hit; the campaign activation route
+ * calls this directly, so the check here is what keeps that route covered.
+ */
 export async function sendDraftCampaignForLead(params: {
   campaignId: string;
   leadId: string;
@@ -115,14 +124,20 @@ export async function sendDraftCampaignForLead(params: {
   }
 
   const supabase = getSupabaseClient();
-  const fallbackCompanySendingEmails = params.companySendingEmails?.length
+  // The whole row: sending accounts plus the Precleared settings (a database
+  // without the precleared_* columns yet reads as "check off"). If the row cannot
+  // be loaded, whether the check is on is unknown, so nothing is sent.
+  const { data: company, error: companyError } = await supabase
+    .from('companies')
+    .select('*')
+    .eq('id', campaign.company_id)
+    .single();
+  if (companyError || !company) {
+    throw new PreclearedHoldError(companyUnavailableClearance(companyError));
+  }
+  const fallbackCompanySendingEmails: string[] = params.companySendingEmails?.length
     ? params.companySendingEmails
-    : (await supabase
-        .from('companies')
-        .select('sending_emails')
-        .eq('id', campaign.company_id)
-        .single()
-      ).data?.sending_emails || [];
+    : company.sending_emails || [];
 
   const { data: lead } = await supabase
     .from('leads')
@@ -136,6 +151,13 @@ export async function sendDraftCampaignForLead(params: {
   if (!lead?.full_name?.trim()) {
     throw new Error(`Lead ${leadId} has no name`);
   }
+
+  // Optional compliance check (Precleared) before anything is created in Instantly.
+  const clearance = await applyPreclearedCheck({ leadId, email: lead.email, company });
+  if (clearance.status === 'held' || clearance.status === 'denied') {
+    throw new PreclearedHoldError(clearance);
+  }
+  const preclearedReceiptId = clearance.status === 'allowed' ? clearance.receiptId || null : null;
 
   const sequences = emails.map((email, index) => ({
     subject: email.subject,
@@ -176,7 +198,7 @@ export async function sendDraftCampaignForLead(params: {
     },
   }]);
 
-  await markLeadRouted(leadId, campaign.id);
+  await markLeadRouted(leadId, campaign.id, preclearedReceiptId);
   await incrementCampaignLeadCount(campaign.id);
 
   return updatedCampaign;

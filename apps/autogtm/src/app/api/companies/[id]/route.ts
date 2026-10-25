@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 
+const PRECLEARED_SENDER_COUNTRIES = ['GB', 'US', 'AE'];
+const PRECLEARED_ADDRESS_SOURCES = ['published', 'bought', 'scraped', 'given', 'unknown'];
+
 export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -61,6 +64,39 @@ export async function PATCH(
     if (body.auto_add_digest_email !== undefined) updateData.auto_add_digest_email = body.auto_add_digest_email;
     if (body.auto_add_regenerate_drafts !== undefined) updateData.auto_add_regenerate_drafts = body.auto_add_regenerate_drafts;
     if (body.system_enabled !== undefined) updateData.system_enabled = body.system_enabled;
+
+    // Precleared compliance check settings (optional, off by default)
+    if (body.precleared_enabled !== undefined) {
+      if (typeof body.precleared_enabled !== 'boolean') {
+        return NextResponse.json({ error: 'precleared_enabled must be true or false' }, { status: 400 });
+      }
+      updateData.precleared_enabled = body.precleared_enabled;
+      // Switching the check off ends any hold it recorded.
+      if (!body.precleared_enabled) updateData.precleared_last_hold = null;
+    }
+    if (body.precleared_sender_country !== undefined) {
+      if (!PRECLEARED_SENDER_COUNTRIES.includes(body.precleared_sender_country)) {
+        return NextResponse.json({ error: `precleared_sender_country must be one of ${PRECLEARED_SENDER_COUNTRIES.join(', ')}` }, { status: 400 });
+      }
+      updateData.precleared_sender_country = body.precleared_sender_country;
+    }
+    if (body.precleared_address_source !== undefined) {
+      if (!PRECLEARED_ADDRESS_SOURCES.includes(body.precleared_address_source)) {
+        return NextResponse.json({ error: `precleared_address_source must be one of ${PRECLEARED_ADDRESS_SOURCES.join(', ')}` }, { status: 400 });
+      }
+      updateData.precleared_address_source = body.precleared_address_source;
+    }
+    if (body.precleared_prospect_country !== undefined) {
+      const raw = body.precleared_prospect_country;
+      const code = typeof raw === 'string' ? raw.trim().toUpperCase() : raw;
+      if (code === null || code === '') {
+        updateData.precleared_prospect_country = null;
+      } else if (typeof code === 'string' && /^[A-Z]{2}$/.test(code)) {
+        updateData.precleared_prospect_country = code;
+      } else {
+        return NextResponse.json({ error: 'precleared_prospect_country must be a two-letter country code or empty' }, { status: 400 });
+      }
+    }
 
     const { data: company, error } = await supabase
       .from('companies')

@@ -1,5 +1,25 @@
 import { z } from 'zod';
 
+// Precleared compliance check (optional, off by default) — per-company settings
+export const PreclearedSenderCountrySchema = z.enum(['GB', 'US', 'AE']);
+export type PreclearedSenderCountry = z.infer<typeof PreclearedSenderCountrySchema>;
+
+export const PreclearedAddressSourceSchema = z.enum(['published', 'bought', 'scraped', 'given', 'unknown']);
+export type PreclearedAddressSource = z.infer<typeof PreclearedAddressSourceSchema>;
+
+/** Why the check could not be made, and so why cold email is waiting. */
+export const PreclearedHoldKindSchema = z.enum(['daily_limit', 'rate_limited', 'out_of_checks', 'key_rejected', 'unavailable']);
+export type PreclearedHoldKind = z.infer<typeof PreclearedHoldKindSchema>;
+
+/** Stored on companies.precleared_last_hold so the Autopilot tab can say what fixes it. */
+export const PreclearedHoldSchema = z.object({
+  kind: PreclearedHoldKindSchema,
+  message: z.string(),
+  fix_url: z.string().nullable(),
+  at: z.string().datetime(),
+});
+export type PreclearedHold = z.infer<typeof PreclearedHoldSchema>;
+
 // Company schema
 export const CompanySchema = z.object({
   id: z.string().uuid(),
@@ -15,6 +35,12 @@ export const CompanySchema = z.object({
   auto_add_run_hour_utc: z.number().min(0).max(23).optional(),
   auto_add_digest_email: z.string().nullable().optional(),
   auto_add_regenerate_drafts: z.boolean().optional(),
+  // Precleared compliance check (optional, off by default)
+  precleared_enabled: z.boolean().optional(),
+  precleared_sender_country: PreclearedSenderCountrySchema.optional(),
+  precleared_address_source: PreclearedAddressSourceSchema.optional(),
+  precleared_prospect_country: z.string().regex(/^[A-Z]{2}$/).nullable().optional(),
+  precleared_last_hold: PreclearedHoldSchema.nullable().optional(),
   created_at: z.string().datetime(),
   updated_at: z.string().datetime(),
 });
@@ -125,8 +151,24 @@ export const LeadSchema = z.object({
   campaign_status: z.enum(['pending', 'routed', 'skipped']).default('pending'),
   campaign_routed_at: z.string().datetime().nullable().optional(),
   skip_reason: z.string().nullable().optional(),
+  // Precleared receipt for the check that cleared this lead for cold email (when the check is on)
+  precleared_receipt_id: z.string().nullable().optional(),
+  precleared_checked_at: z.string().datetime().nullable().optional(),
 });
 export type Lead = z.infer<typeof LeadSchema>;
+
+// Cached Precleared verdict for one address (precleared_checks table, 30 days)
+export const PreclearedCheckSchema = z.object({
+  email: z.string(),
+  inputs_hash: z.string(),
+  verdict: z.enum(['ok_to_email', 'consent_needed', 'blocked']),
+  reason: z.string().nullable(),
+  next_step: z.string().nullable(),
+  receipt_id: z.string().nullable(),
+  recipient_country: z.string().nullable(),
+  checked_at: z.string().datetime(),
+});
+export type PreclearedCheck = z.infer<typeof PreclearedCheckSchema>;
 
 // Enriched lead data (output from AI enrichment)
 export const EnrichedLeadDataSchema = z.object({

@@ -1203,7 +1203,15 @@ export const addLeadToCampaignJob = inngest.createFunction(
     const { leadId, campaignId } = event.data;
     logger.info(`Adding lead ${leadId} to campaign ${campaignId}`);
 
-    await step.run('route-lead', () => addLeadToCampaignCore({ leadId, campaignId }));
+    // A Precleared verdict other than ok_to_email comes back as a structured
+    // result (the lead is already marked Skipped with the reason); a check that
+    // could not be made throws, so Inngest retries and the lead stays Ready to Add.
+    const result = await step.run('route-lead', () => addLeadToCampaignCore({ leadId, campaignId }));
+
+    if (!result.ok) {
+      logger.warn(`Lead ${leadId} not added to campaign ${campaignId}: ${result.reason}${result.message ? ` (${result.message})` : ''}`);
+      return { leadId, campaignId, reason: result.reason, message: result.message };
+    }
 
     logger.info(`Lead ${leadId} added to campaign ${campaignId}`);
     return { leadId, campaignId };
@@ -1316,8 +1324,19 @@ export const autoAddSweepCompany = inngest.createFunction(
     const addedLeadSummaries: Array<{ id: string; name: string; score: number; category: string | null; bio: string | null; reason: string | null }> = [];
     let leadsSkipped = 0;
     let regeneratedCount = 0;
+    // Set when the Precleared compliance check could not be made (allowance used
+    // up, key out of checks, network trouble). The remaining leads in this run
+    // wait too, rather than repeating the failing call; they all stay Ready to Add.
+    let complianceHold: { message: string; fixUrl: string | null } | null = null;
+    let complianceHeld = 0;
 
     for (const lead of candidates) {
+      if (complianceHold) {
+        leadsSkipped += 1;
+        complianceHeld += 1;
+        skipReasons.compliance_check_unavailable = (skipReasons.compliance_check_unavailable || 0) + 1;
+        continue;
+      }
       const result = await step.run(`route-${lead.id}`, async (): Promise<AddLeadToCampaignResult> =>
         addLeadToCampaignCore({
           leadId: lead.id,
@@ -1327,6 +1346,11 @@ export const autoAddSweepCompany = inngest.createFunction(
           regenerateDraftFirst,
         })
       );
+      if (!result.ok && result.reason === 'compliance_check_unavailable') {
+        complianceHold = { message: result.message || 'Precleared could not be reached.', fixUrl: result.fixUrl ?? null };
+        complianceHeld += 1;
+        logger.warn(`Autopilot sweep: company ${companyId}: Precleared check unavailable, holding the rest of the run: ${complianceHold.message}`);
+      }
       if (result.ok) {
         addedLeadIds.push(lead.id);
         if (result.regenerated) regeneratedCount += 1;
@@ -1369,10 +1393,27 @@ export const autoAddSweepCompany = inngest.createFunction(
       countReadyToAddLeads(companyId, minFitScore)
     );
 
-    // Send digest email (skip on zero-add days per product decision)
+    // Anything the compliance check did to this run goes in the digest, even on a
+    // day when nothing was added: leads it could not check, and leads it said no to.
+    const complianceDenied = skipReasons.compliance_hold || 0;
+    const complianceNoticeParts: string[] = [];
+    if (complianceHold) {
+      complianceNoticeParts.push(
+        `Precleared could not check ${complianceHeld} lead${complianceHeld === 1 ? '' : 's'}: ${complianceHold.message} ${complianceHeld === 1 ? 'It stays' : 'They stay'} in Ready to Add.`
+      );
+    }
+    if (complianceDenied > 0) {
+      complianceNoticeParts.push(
+        `Precleared said no to ${complianceDenied} lead${complianceDenied === 1 ? '' : 's'}: ${complianceDenied === 1 ? 'it is' : 'they are'} under Skipped in the dashboard with the rule that applied and what would change it.`
+      );
+    }
+    const complianceNotice = complianceNoticeParts.length > 0 ? complianceNoticeParts.join(' ') : null;
+
+    // Send digest email (skip on zero-add days per product decision, unless the
+    // compliance check held leads back or turned them down: that is never left silent)
     let digestSent = false;
     let digestError: string | null = null;
-    if (addedLeadIds.length > 0) {
+    if (addedLeadIds.length > 0 || complianceNotice) {
       const digestResult = await step.run('send-digest', async () => {
         const envRecipients = process.env.DIGEST_RECIPIENTS?.split(',').map((s) => s.trim()).filter(Boolean) || [];
         const recipients = company.auto_add_digest_email?.trim()
@@ -1401,6 +1442,8 @@ export const autoAddSweepCompany = inngest.createFunction(
               trigger,
               appUrl,
               regeneratedCount,
+              complianceNotice,
+              complianceFixUrl: complianceHold?.fixUrl ?? null,
             }),
           });
           return { sent: true, error: null as string | null };
@@ -1425,7 +1468,7 @@ export const autoAddSweepCompany = inngest.createFunction(
       })
     );
 
-    logger.info(`Autopilot sweep: company ${companyId} — added ${addedLeadIds.length}, regenerated ${regeneratedCount}, skipped ${leadsSkipped}, digest=${digestSent}`);
+    logger.info(`Autopilot sweep: company ${companyId} — added ${addedLeadIds.length}, regenerated ${regeneratedCount}, skipped ${leadsSkipped}, complianceHeld ${complianceHeld}, digest=${digestSent}`);
     return {
       runId: run.id,
       companyId,
@@ -1433,10 +1476,18 @@ export const autoAddSweepCompany = inngest.createFunction(
       added: addedLeadIds.length,
       regenerated: regeneratedCount,
       skipped: leadsSkipped,
+      complianceHeld,
       digestSent,
     };
   }
 );
+
+// Sweep skip reasons that read better than their snake_case key.
+const SKIP_REASON_LABELS: Record<string, string> = {
+  compliance_hold: 'held by Precleared (see Skipped)',
+  compliance_check_unavailable: 'waiting for the Precleared check',
+};
+const skipReasonLabel = (reason: string) => SKIP_REASON_LABELS[reason] || reason.replace(/_/g, ' ');
 
 function renderAutoAddDigestHtml(params: {
   companyName: string;
@@ -1451,9 +1502,12 @@ function renderAutoAddDigestHtml(params: {
   trigger: 'cron' | 'manual';
   appUrl: string;
   regeneratedCount: number;
+  /** Set when the Precleared compliance check could not be made for some leads, or said no to some. */
+  complianceNotice?: string | null;
+  complianceFixUrl?: string | null;
 }): string {
-  const { companyName, leadsAdded, leadsSkipped, breakdown, topLeads, skipReasons, backlogRemaining, minFitScore, dailyLimit, trigger, appUrl, regeneratedCount } = params;
-  const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const { companyName, leadsAdded, leadsSkipped, breakdown, topLeads, skipReasons, backlogRemaining, minFitScore, dailyLimit, trigger, appUrl, regeneratedCount, complianceNotice, complianceFixUrl } = params;
+  const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   const triggerLabel = trigger === 'manual' ? 'Manual run' : 'Daily run';
 
   const breakdownRows = breakdown.map((b) => `
@@ -1476,8 +1530,15 @@ function renderAutoAddDigestHtml(params: {
     ? ''
     : `<div style="margin-top:16px;padding:12px 14px;background:#fff7ed;border:1px solid #fed7aa;border-radius:8px;font-size:13px;color:#9a3412;">
         <strong>Skipped ${leadsSkipped}:</strong>
-        ${Object.entries(skipReasons).map(([r, n]) => `${n} × ${esc(r.replace(/_/g, ' '))}`).join(' · ')}
+        ${Object.entries(skipReasons).map(([r, n]) => `${n} × ${esc(skipReasonLabel(r))}`).join(' · ')}
        </div>`;
+
+  const complianceNoticeHtml = complianceNotice
+    ? `<div style="margin-top:16px;padding:12px 14px;background:#fffbeb;border:1px solid #fde68a;border-radius:8px;font-size:13px;color:#92400e;">
+        <strong>Compliance check.</strong> ${esc(complianceNotice)}
+        ${complianceFixUrl ? ` <a href="${esc(complianceFixUrl)}" style="color:#92400e;font-weight:600;">Fix it</a>` : ''}
+       </div>`
+    : '';
 
   return `<!doctype html>
 <html>
@@ -1509,6 +1570,8 @@ function renderAutoAddDigestHtml(params: {
           ` : ''}
 
           ${skipReasonsHtml}
+
+          ${complianceNoticeHtml}
 
           ${regeneratedCount > 0 ? `
             <div style="margin-top:16px;padding:12px 14px;background:#eef2ff;border:1px solid #c7d2fe;border-radius:8px;font-size:13px;color:#3730a3;">

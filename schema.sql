@@ -22,6 +22,12 @@ create table companies (
   auto_add_run_hour_utc integer not null default 14 check (auto_add_run_hour_utc between 0 and 23),
   auto_add_digest_email text,
   auto_add_regenerate_drafts boolean not null default false,
+  -- Precleared compliance check (optional, off by default)
+  precleared_enabled boolean not null default false,
+  precleared_sender_country text not null default 'GB' check (precleared_sender_country in ('GB', 'US', 'AE')),
+  precleared_address_source text not null default 'unknown' check (precleared_address_source in ('published', 'bought', 'scraped', 'given', 'unknown')),
+  precleared_prospect_country text check (precleared_prospect_country is null or precleared_prospect_country ~ '^[A-Z]{2}$'),
+  precleared_last_hold jsonb,
   agent_notes text,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
@@ -168,6 +174,9 @@ create table leads (
   campaign_status text not null default 'pending' check (campaign_status in ('pending', 'routed', 'skipped')),
   campaign_routed_at timestamptz,
   skip_reason text,
+  -- Precleared receipt for the check that cleared this lead for cold email
+  precleared_receipt_id text,
+  precleared_checked_at timestamptz,
   created_at timestamptz not null default now()
 );
 
@@ -214,6 +223,22 @@ create table auto_add_runs (
 create index auto_add_runs_company_started_idx on auto_add_runs(company_id, run_started_at desc);
 
 -- ============================================================
+-- Precleared Checks (30-day cache of compliance verdicts, one row per
+-- address and set of inputs; `unknown` is never cached)
+-- ============================================================
+create table precleared_checks (
+  email text not null,
+  inputs_hash text not null,
+  verdict text not null check (verdict in ('ok_to_email', 'consent_needed', 'blocked')),
+  reason text,
+  next_step text,
+  receipt_id text,
+  recipient_country text,
+  checked_at timestamptz not null default now(),
+  primary key (email, inputs_hash)
+);
+
+-- ============================================================
 -- Allowed Users (invite whitelist)
 -- ============================================================
 create table allowed_users (
@@ -248,6 +273,7 @@ alter table campaign_emails enable row level security;
 alter table leads enable row level security;
 alter table daily_digests enable row level security;
 alter table auto_add_runs enable row level security;
+alter table precleared_checks enable row level security;
 alter table allowed_users enable row level security;
 
 -- Allow authenticated users full access (adjust as needed for your use case)
@@ -280,6 +306,9 @@ create policy "Authenticated users can manage daily_digests"
 
 create policy "Authenticated users can manage auto_add_runs"
   on auto_add_runs for all using (auth.role() = 'authenticated');
+
+create policy "Authenticated users can manage precleared_checks"
+  on precleared_checks for all using (auth.role() = 'authenticated');
 
 create policy "Authenticated users can read allowed_users"
   on allowed_users for select using (auth.role() = 'authenticated');
